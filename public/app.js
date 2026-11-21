@@ -67,33 +67,99 @@ async function shrink(file) {
 }
 
 // ====== shell / routing ======
-const NAV = [
-  ['home', '🏠', 'Home'], ['scan', '📷', 'Scan'], ['rooms', '🛏️', 'Rooms'], ['stock', '📦', 'Stock'], ['assets', '🏷️', 'Assets'],
-  ['expenses', '🧾', 'Expenses'], ['more', '☰', 'More']
+const ICON = {
+  home: 'M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z', box: 'M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8',
+  tag: 'M20 12l-8 8-9-9V3h8zM7.5 7.5h.01', cart: 'M3 4h2l2.5 11h10L20 7H6.5M9 20h.01M17 20h.01', list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
+  bed: 'M3 19V6M3 14h18v5M21 14v-2a3 3 0 0 0-3-3h-7v5M7 11h.01', scan: 'M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M4 12h16',
+  check: 'M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h9', barcode: 'M4 5v14M7 5v14M11 5v14M14 5v14M17 5v14M20 5v14',
+  receipt: 'M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6', chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
+  gear: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12h2M3 12h2M12 3v2M12 19v2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4',
+  plus: 'M12 5v14M5 12h14', search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-5-5', menu: 'M4 6h16M4 12h16M4 18h16',
+  alert: 'M12 9v4M12 17h.01M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z', tool: 'M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z',
+  wallet: 'M3 7h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 7l2-3h12v3M16 13h.01', clock: 'M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', users: 'M16 11a3 3 0 1 0 0-6M3 20a6 6 0 0 1 12 0M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM17 14a6 6 0 0 1 4 6'
+};
+const ic = (n, s = 18) => `<svg class="ic" width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${ICON[n]}"/></svg>`;
+const MENU = [
+  ['home', 'Dashboard', 'home'],
+  ['_', 'Inventory'], ['stock', 'Stock items', 'box'], ['assets', 'Assets', 'tag'], ['restock', 'Restock list', 'list'], ['po', 'Purchasing', 'cart'],
+  ['_', 'Hotel'], ['rooms', 'Rooms', 'bed'], ['audit', 'Room audit', 'check'], ['scan', 'Scan', 'scan'], ['labels', 'Barcode labels', 'barcode'],
+  ['_', 'Finance'], ['expenses', 'Expenses', 'receipt'],
+  ['_', 'Insights'], ['reports', 'Reports', 'chart'], ['admin', 'Settings', 'gear', 'manager']
 ];
-const SIDE_EXTRA = [['audit', 'Room audit'], ['restock', 'Restock list'], ['po', 'Purchasing'], ['labels', 'Print labels'], ['reports', 'Reports'], ['admin', 'Settings']];
+const MOBILE = [['home', 'Home', 'home'], ['scan', 'Scan', 'scan'], ['rooms', 'Rooms', 'bed'], ['stock', 'Stock', 'box'], ['expenses', 'Expenses', 'receipt'], ['more', 'More', 'menu']];
+const ALIAS = { room: 'rooms', item: 'stock', asset: 'assets' };
+const SIDE_EXTRA = [['audit', 'Room audit'], ['restock', 'Restock list'], ['po', 'Purchasing'], ['labels', 'Barcode labels'], ['reports', 'Reports'], ['admin', 'Settings']];
+const initials = n => String(n || '?').split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+
+function closePop() { const p = $('#pop'); if (p) p.remove(); }
+function popMenu(anchor, html) {
+  closePop();
+  const p = document.createElement('div'); p.className = 'pop'; p.id = 'pop'; p.innerHTML = html; document.body.appendChild(p);
+  const r = anchor.getBoundingClientRect(); p.style.position = 'fixed'; p.style.top = (r.bottom + 6) + 'px';
+  p.style.right = Math.max(8, document.documentElement.clientWidth - r.right) + 'px';
+  setTimeout(() => document.addEventListener('click', closePop, { once: true }), 0);
+  return p;
+}
+window.changePw = () => modal('Change password', fields([{ n: 'current', label: 'Current password', type: 'password', req: true }, { n: 'next', label: 'New password (8+ characters)', type: 'password', req: true }]), { onSubmit: async (f, d) => { await post('/api/me/password', d); closeModal(); toast('Password changed'); } });
+async function doLogout() { await post('/api/logout'); me = null; renderLogin(); }
+
 function renderShell() {
-  $('#app').innerHTML = `<div class="shell"><nav class="side"><div class="logo">🏨 Hotel Stock</div>
-    ${NAV.filter(n => n[0] !== 'more').map(n => `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]} ${n[2]}</a>`).join('')}
-    <div class="small mute" style="padding:12px 12px 4px">TOOLS</div>
-    ${SIDE_EXTRA.filter(n => n[0] !== 'admin' || can()).map(n => `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]}</a>`).join('')}
-    <div class="sp"></div><div class="who">${esc(me.name)} · ${esc(me.role)}</div><a href="#" id="logout">Sign out</a></nav>
-    <main class="main" id="view"></main></div>
-    <nav class="bottom">${NAV.map(n => `<a href="#/${n[0]}" data-nav="${n[0]}"><b>${n[1]}</b>${n[2]}</a>`).join('')}</nav>`;
-  $('#logout').onclick = async e => { e.preventDefault(); await post('/api/logout'); me = null; renderLogin(); };
+  $('#app').innerHTML = `<div class="shell"><nav class="side"><div class="logo"><i>🏨</i>Hotel Stock</div>
+    ${MENU.filter(m => !m[3] || can(m[3])).map(m => m[0] === '_' ? `<div class="grp">${m[1]}</div>` : `<a href="#/${m[0]}" data-nav="${m[0]}">${ic(m[2])}<span>${m[1]}</span></a>`).join('')}
+    <div class="sp"></div><div class="who">${esc(me.name)} · ${esc(me.role)}</div></nav>
+    <div class="content"><header class="topbar"><div class="brand-m">Hotel Stock</div>
+      <div class="gsearch"><span class="gs-ic">${ic('search', 16)}</span><input id="gs" placeholder="Search rooms, assets, items — or type a code" autocomplete="off"><div id="gsr" class="gs-res"></div></div>
+      <div class="tb-right"><button class="btn" id="quick">${ic('plus', 16)}<span class="qt">New</span></button><button class="avatar" id="usr" title="${esc(me.name)}">${esc(initials(me.name))}</button></div></header>
+    <main class="main" id="view"></main></div></div>
+    <nav class="bottom">${MOBILE.map(n => `<a href="#/${n[0]}" data-nav="${n[0]}">${ic(n[2], 21)}${n[1]}</a>`).join('')}</nav>`;
+  $('#quick').onclick = e => {
+    e.stopPropagation();
+    const p = popMenu(e.currentTarget, `<a href="#/expenses/new">${ic('receipt', 16)} New expense</a>${can('manager') ? `<button data-a="item">${ic('box', 16)} New stock item</button><a href="#/assets">${ic('tag', 16)} Register assets</a><a href="#/po">${ic('cart', 16)} Purchase order</a>` : ''}<a href="#/audit">${ic('check', 16)} Room audit</a><a href="#/scan">${ic('scan', 16)} Scan a code</a>`);
+    p.querySelectorAll('[data-a]').forEach(b => b.onclick = () => itemForm());
+  };
+  $('#usr').onclick = e => {
+    e.stopPropagation();
+    const p = popMenu(e.currentTarget, `<div class="pi"><b>${esc(me.name)}</b><br>${esc(me.email)} · ${esc(me.role)}</div><button data-a="pw">Change password</button><button data-a="out">Sign out</button>`);
+    p.querySelector('[data-a=pw]').onclick = changePw; p.querySelector('[data-a=out]').onclick = doLogout;
+  };
+  wireSearch();
+}
+let gsT;
+function wireSearch() {
+  const inp = $('#gs'), box = $('#gsr'); const hide = () => box.classList.remove('on');
+  inp.addEventListener('input', () => {
+    clearTimeout(gsT);
+    gsT = setTimeout(async () => {
+      const q = inp.value.trim(); if (q.length < 2) return hide();
+      const [items, assets, locs] = await Promise.all([get('/api/items?q=' + encodeURIComponent(q)).catch(() => []), get('/api/assets?q=' + encodeURIComponent(q)).catch(() => []), get('/api/locations').catch(() => [])]);
+      const ql = q.toLowerCase(); const rooms = locs.filter(l => l.name.toLowerCase().includes(ql) || l.code.toLowerCase().includes(ql));
+      const sec = (t, a, f) => a.length ? `<div class="gh">${t}</div>` + a.slice(0, 5).map(f).join('') : '';
+      const html = sec('Rooms & places', rooms, l => `<a href="#/room/${l.id}"><span>${esc(l.name)}</span><span class="mute small">${esc(l.code)}</span></a>`) +
+        sec('Assets', assets, a => `<a href="#/asset/${a.id}"><span>${esc(a.name)}</span><span class="mute small">${esc(a.tag)} · ${esc(a.location || '')}</span></a>`) +
+        sec('Stock items', items, i => `<a href="#/item/${i.id}"><span>${esc(i.name)}</span><span class="mute small">${esc(i.sku || i.barcode || '')}</span></a>`);
+      box.innerHTML = html || '<div class="empty">No matches</div>'; box.classList.add('on');
+    }, 220);
+  });
+  inp.addEventListener('keydown', async e => {
+    if (e.key === 'Enter') { const c = inp.value.trim(); if (!c) return; try { const r = await get('/api/resolve?code=' + encodeURIComponent(c)); go(`#/${r.type === 'location' ? 'room' : r.type}/${r.id}`); inp.value = ''; hide(); } catch { } }
+    if (e.key === 'Escape') { hide(); inp.blur(); }
+  });
+  document.addEventListener('click', e => { if (!e.target.closest('.gsearch')) hide(); });
+  box.addEventListener('click', () => { inp.value = ''; hide(); });
 }
 function renderLogin(err) {
-  $('#app').innerHTML = `<div class="login"><h1 style="text-align:center;margin-bottom:4px">🏨 Hotel Stock</h1><p class="mute" style="text-align:center;margin-top:0">Sign in to continue</p>
+  $('#app').innerHTML = `<div class="login-wrap"><div class="login"><h1 style="text-align:center;margin-bottom:4px;color:#fff;font-size:24px">🏨 Hotel Stock</h1><p style="text-align:center;margin-top:0;color:#aab6cc">Sign in to continue</p>
   <form class="card" id="lf"><label>Email</label><input name="email" type="email" autocomplete="username" required autofocus><label>Password</label><input name="password" type="password" autocomplete="current-password" required>
-  <div class="err">${esc(err || '')}</div><button class="btn big" style="width:100%;margin-top:14px">Sign in</button></form></div>`;
+  <div class="err">${esc(err || '')}</div><button class="btn big" style="width:100%;margin-top:14px;justify-content:center">Sign in</button></form></div></div>`;
   $('#lf').onsubmit = async e => { e.preventDefault(); try { me = await post('/api/login', readForm(e.target)); renderShell(); route(); } catch (er) { renderLogin(er.message); } };
 }
 const routes = {};
 async function route() {
   if (!me) return;
-  stopScanner();
+  stopScanner(); closePop();
   const [name, ...args] = (location.hash.replace(/^#\/?/, '').split('?')[0] || 'home').split('/');
-  document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === name || (name === 'room' && a.dataset.nav === 'rooms') || (name === 'item' && a.dataset.nav === 'stock') || (name === 'asset' && a.dataset.nav === 'assets') || (['audit', 'restock', 'po', 'labels', 'reports', 'admin'].includes(name) && a.dataset.nav === 'more' && false)));
+  const key = ALIAS[name] || name;
+  document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === key));
   const v = $('#view'); if (!v) return;
   const fn = routes[name] || routes.home;
   v.innerHTML = '<div class="empty">Loading…</div>';
@@ -102,26 +168,40 @@ async function route() {
 }
 window.addEventListener('hashchange', route);
 const go = h => { location.hash = h; };
-const head = (title, actions = '') => `<div class="top"><h1>${title}</h1>${actions}</div>`;
+const head = (title, actions = '') => `<div class="page-head"><h1>${title}</h1><div class="ph-actions">${actions}</div></div>`;
 const statusTag = s => `<span class="tag ${{ clean: 'green', inspected: 'green', dirty: 'amber', maintenance: 'red' }[s] || ''}">${esc(s)}</span>`;
 const condTag = c => `<span class="tag ${{ good: 'green', needs_repair: 'amber', under_repair: 'amber', missing: 'red', retired: '' }[c] || ''}">${esc(String(c).replace('_', ' '))}</span>`;
 async function locOptions(types) { const l = await get('/api/locations'); return l.filter(x => !types || types.includes(x.type)).map(x => [x.id, `${x.name}${x.type !== 'room' ? ' (' + x.type + ')' : ''}`]); }
 
 // ====== HOME ======
 routes.home = async v => {
-  const d = await get('/api/dashboard');
-  const S = (n, l, href, cls = '') => `<a class="stat ${cls}" href="${href}"><div class="n">${n}</div><div class="l">${l}</div></a>`;
-  v.innerHTML = head('Today', `<span class="mute small">${esc(new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' }))}</span>`) +
-    `<div class="grid g2">
-    ${S(`${d.occupied}/${d.rooms}`, 'Rooms occupied', '#/rooms')}${S(d.arrivals, 'Arrivals today', '#/rooms')}${S(d.departures, 'Departures today', '#/rooms')}
-    ${S(d.dirty, 'Rooms to clean', '#/rooms', d.dirty ? 'warn' : '')}
-    ${S(d.restock_lines, 'Restock lines needed', '#/restock', d.restock_lines ? 'warn' : '')}${S(d.low_stock, 'Low stock items', '#/reports/low', d.low_stock ? 'bad' : '')}
-    ${S(d.missing_assets, 'Missing assets', '#/assets?c=missing', d.missing_assets ? 'bad' : '')}${S(d.assets_in_repair, 'Assets needing repair', '#/assets?c=needs_repair', d.assets_in_repair ? 'warn' : '')}
-    ${can('manager', 'accounts') ? S(money(d.month_spend), 'Spend this month', '#/expenses') : ''}
-    ${can('manager', 'accounts') ? S(d.pending_expenses.n, `Expenses awaiting approval (${money(d.pending_expenses.t)})`, '#/expenses?s=pending', d.pending_expenses.n ? 'warn' : '') : ''}
-    ${d.warranties_expiring ? S(d.warranties_expiring, 'Warranties expiring in 30 days', '#/assets') : ''}</div>
-    <div class="row" style="margin-top:14px"><a class="btn big" href="#/scan">📷 Scan a code</a><a class="btn sec big" href="#/audit">Room audit</a><a class="btn sec big" href="#/expenses/new">+ Expense</a></div>
-    <p class="mute small" style="margin-top:14px">${d.last_sync ? 'Airbnb calendars last synced ' + esc(dt(d.last_sync.replace('T', ' ').slice(0, 19))) : 'Airbnb calendars not synced yet — add calendar links in Settings → Rooms.'}</p>`;
+  const priv = can('manager', 'accounts');
+  const t = todayStr(), t3 = ymd(new Date(Date.now() + 3 * 864e5));
+  const [d, bk, low, locs, exps] = await Promise.all([get('/api/dashboard'), get(`/api/bookings?from=${t}&to=${t3}`), get('/api/reports/lowstock'), get('/api/locations'), priv ? get('/api/expenses?status=pending') : Promise.resolve([])]);
+  const K = (icon, n, l, href, cls = '') => `<a class="kpi ${cls}" href="${href}"><span class="ki">${ic(icon, 20)}</span><span><div class="n">${n}</div><div class="l">${l}</div></span></a>`;
+  const moves = bk.filter(b => b.status !== 'blocked').flatMap(b => [
+    b.checkin >= t && b.checkin <= t3 ? { room: b.room, id: b.location_id, guest: b.guest, ev: 'Arrives', date: b.checkin } : null,
+    b.checkout >= t && b.checkout <= t3 ? { room: b.room, id: b.location_id, guest: b.guest, ev: 'Departs', date: b.checkout } : null]).filter(Boolean).sort((a, b) => a.date.localeCompare(b.date) || a.room.localeCompare(b.room));
+  const dirty = locs.filter(l => l.type === 'room' && l.status === 'dirty');
+  const W = (title, link, body) => `<div class="card flush"><div class="ch"><h2>${title}</h2>${link || ''}</div>${body}</div>`;
+  v.innerHTML = head('Dashboard', `<span class="mute small">${esc(new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))}</span>`) +
+    `<div class="kpis">
+    ${K('bed', `${d.occupied}<span class="mute" style="font-size:14px;font-weight:500"> / ${d.rooms}</span>`, 'Rooms occupied', '#/rooms')}
+    ${K('users', `${d.arrivals} · ${d.departures}`, 'Arrivals · Departures today', '#/rooms')}
+    ${K('clock', d.dirty, 'Rooms to clean', '#/rooms', d.dirty ? 'warn' : 'good')}
+    ${K('list', d.restock_lines, 'Restock lines needed', '#/restock', d.restock_lines ? 'warn' : 'good')}
+    ${K('box', d.low_stock, 'Low stock items', '#/reports/low', d.low_stock ? 'bad' : 'good')}
+    ${K('alert', d.missing_assets, 'Missing assets', '#/assets?c=missing', d.missing_assets ? 'bad' : 'good')}
+    ${K('tool', d.assets_in_repair, 'Assets needing repair', '#/assets?c=needs_repair', d.assets_in_repair ? 'warn' : 'good')}
+    ${priv ? K('wallet', money(d.month_spend), 'Spend this month', '#/expenses') : ''}
+    ${priv ? K('receipt', d.pending_expenses.n, `Awaiting approval (${money(d.pending_expenses.t)})`, '#/expenses?s=pending', d.pending_expenses.n ? 'warn' : 'good') : ''}</div>
+    <div class="cols">
+    ${W('Arrivals & departures · next 3 days', '<a class="small" href="#/rooms">Rooms →</a>', moves.length ? `<div class="scroll"><table><tr><th>Date</th><th>Room</th><th>Guest</th><th></th></tr>${moves.slice(0, 8).map(m => `<tr class="click" onclick="go('#/room/${m.id}')"><td class="small">${esc(dt(m.date))}</td><td class="bold">${esc(m.room)}</td><td>${esc(m.guest || '—')}</td><td><span class="tag ${m.ev === 'Arrives' ? 'green' : 'amber'}">${m.ev}</span></td></tr>`).join('')}</table></div>` : '<div class="empty">No movements in the next 3 days.</div>')}
+    ${W('Rooms to clean', '<a class="small" href="#/rooms">All rooms →</a>', dirty.length ? `<div style="padding:12px 16px">${dirty.map(r => `<a class="chip" style="text-decoration:none;color:inherit" href="#/room/${r.id}">${esc(r.name)}</a>`).join('')}</div>` : '<div class="empty">Every room is clean ✅</div>')}
+    ${W('Low stock', '<a class="small" href="#/reports/low">View all →</a>', low.length ? `<div class="scroll"><table><tr><th>Item</th><th class="num">In stores</th><th class="num">Reorder at</th></tr>${low.slice(0, 6).map(i => `<tr class="click" onclick="go('#/item/${i.id}')"><td>${esc(i.name)}</td><td class="num bold" style="color:var(--red)">${qtyf(i.qty)}</td><td class="num">${qtyf(i.reorder_level)}</td></tr>`).join('')}</table></div>` : '<div class="empty">Nothing running low ✅</div>')}
+    ${priv ? W('Expenses awaiting approval', '<a class="small" href="#/expenses?s=pending">Review →</a>', exps.length ? `<div class="scroll"><table><tr><th>Date</th><th>Details</th><th class="num">Amount</th></tr>${exps.slice(0, 6).map(e => `<tr class="click" onclick="go('#/expenses?s=pending')"><td class="small">${esc(e.date)}</td><td>${esc(e.vendor || e.category || '—')}<div class="small mute">${esc(e.submitted_name || '')}</div></td><td class="num bold">${money(e.amount)}</td></tr>`).join('')}</table></div>` : '<div class="empty">Nothing waiting 🎉</div>') : ''}
+    </div>
+    <p class="mute small" style="margin-top:6px">${d.last_sync ? 'Airbnb calendars last synced ' + esc(dt(d.last_sync.replace('T', ' ').slice(0, 19))) : 'Airbnb calendars not synced yet — add calendar links in Settings → Rooms.'}</p>`;
 };
 
 // ====== SCAN ======
@@ -193,16 +273,17 @@ window.addBooking = loc => modal('Manual booking', fields([{ n: 'guest', label: 
 
 // ====== STOCK (consumables) ======
 routes.stock = async v => {
-  const items = await get('/api/items?kind=consumable');
-  const cats = [...new Set(items.map(i => i.category || 'Other'))];
-  v.innerHTML = head('Stock', can('manager') ? '<button class="btn sm" id="newitem">+ New item</button>' : '') +
-    `<input id="q" placeholder="Search name, SKU or barcode…" style="margin-bottom:10px"><div id="list"></div>`;
+  const [items, low] = await Promise.all([get('/api/items?kind=consumable'), get('/api/reports/lowstock')]);
+  const lowIds = new Set(low.map(l => l.id));
+  const cats = [...new Set(items.map(i => i.category || 'Other'))].sort();
+  v.innerHTML = head('Stock items', can('manager') ? `<button class="btn" id="newitem">${ic('plus', 16)} New item</button>` : '') +
+    `<div class="card flush"><div class="toolbar"><input class="grow" id="q" placeholder="Search by name, SKU or barcode…"><select id="cat"><option value="">All categories</option>${cats.map(c => `<option>${esc(c)}</option>`).join('')}</select></div><div class="scroll" id="list"></div></div>`;
   const draw = () => {
-    const q = $('#q').value.toLowerCase();
-    const rows = items.filter(i => !q || [i.name, i.sku, i.barcode].some(x => (x || '').toLowerCase().includes(q)));
-    $('#list').innerHTML = cats.map(c => { const r = rows.filter(i => (i.category || 'Other') === c); return r.length ? `<h3>${esc(c)}</h3><div class="card scroll"><table>${r.map(i => `<tr class="click" onclick="go('#/item/${i.id}')"><td><span class="bold">${esc(i.name)}</span><div class="small mute">${esc(i.sku || '')} · ${esc(i.barcode || '')}</div></td><td class="r bold">${qtyf(i.total_qty)} <span class="mute small">${esc(i.unit)}</span></td></tr>`).join('')}</table></div>` : ''; }).join('') || '<div class="empty">No items found.</div>';
+    const q = $('#q').value.toLowerCase(), c = $('#cat').value;
+    const rows = items.filter(i => (!c || (i.category || 'Other') === c) && (!q || [i.name, i.sku, i.barcode].some(x => (x || '').toLowerCase().includes(q))));
+    $('#list').innerHTML = rows.length ? `<table><tr><th>Name</th><th class="hm">SKU</th><th class="hm">Barcode</th><th class="hm">Category</th><th class="num">On hand</th><th class="num hm">Reorder at</th><th></th></tr>${rows.map(i => `<tr class="click" onclick="go('#/item/${i.id}')"><td class="bold">${esc(i.name)}</td><td class="small hm">${esc(i.sku || '—')}</td><td class="hm"><span class="code">${esc(i.barcode || '')}</span></td><td class="hm">${esc(i.category || 'Other')}</td><td class="num bold">${qtyf(i.total_qty)} <span class="mute small">${esc(i.unit)}</span></td><td class="num hm">${i.reorder_level ? qtyf(i.reorder_level) : '—'}</td><td>${lowIds.has(i.id) ? '<span class="tag red">Low</span>' : ''}</td></tr>`).join('')}</table>` : '<div class="empty">No items found.</div>';
   };
-  $('#q').oninput = draw; draw();
+  $('#q').oninput = draw; $('#cat').onchange = draw; draw();
   if ($('#newitem')) $('#newitem').onclick = () => itemForm();
 };
 async function itemForm(it) {
@@ -351,10 +432,10 @@ routes.expenses = async (v, sub) => {
   const cats = await get('/api/expense-categories');
   const f = { from: qs.get('from') || todayStr().slice(0, 8) + '01', to: qs.get('to') || todayStr(), category: qs.get('c') || '', status: qs.get('s') || '' };
   const privileged = can('manager', 'accounts');
-  v.innerHTML = head('Expenses', '<a class="btn sm" href="#/expenses/new">+ Add expense</a>') +
-    `<div class="card"><div class="f2"><div><label>From</label><input type="date" id="ef" value="${f.from}"></div><div><label>To</label><input type="date" id="et" value="${f.to}"></div>
-    <div><label>Category</label><select id="ec"><option value="">All</option>${cats.map(c => `<option ${c === f.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
-    <div><label>Status</label><select id="es"><option value="">All</option>${['pending', 'approved', 'rejected'].map(s => `<option ${s === f.status ? 'selected' : ''}>${s}</option>`).join('')}</select></div></div></div>
+  v.innerHTML = head('Expenses', `<a class="btn" href="#/expenses/new">${ic('plus', 16)} Add expense</a>`) +
+    `<div class="card flush"><div class="toolbar"><div><label style="margin:0 0 2px">From</label><input type="date" id="ef" value="${f.from}"></div><div><label style="margin:0 0 2px">To</label><input type="date" id="et" value="${f.to}"></div>
+    <div><label style="margin:0 0 2px">Category</label><select id="ec"><option value="">All categories</option>${cats.map(c => `<option ${c === f.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+    <div><label style="margin:0 0 2px">Status</label><select id="es"><option value="">All statuses</option>${['pending', 'approved', 'rejected'].map(s => `<option ${s === f.status ? 'selected' : ''}>${s}</option>`).join('')}</select></div></div></div>
     <div id="sum"></div><div id="list"></div>`;
   const draw = async () => {
     const p = new URLSearchParams({ from: $('#ef').value, to: $('#et').value, category: $('#ec').value, status: $('#es').value });
@@ -364,13 +445,16 @@ routes.expenses = async (v, sub) => {
       const max = Math.max(1, ...s.by_category.map(c => c.total));
       $('#sum').innerHTML = `<div class="card"><div class="row sb"><h2 style="margin:0">Total ${money(s.total)}</h2><a class="btn sec sm" href="/api/expenses.csv?${p}">⬇ CSV</a></div><div style="margin-top:8px">${s.by_category.map(c => `<div class="barrow"><span>${esc(c.category)}</span><div><div class="bar" style="width:${Math.max(3, c.total / max * 100)}%"></div></div><span class="r">${money(c.total)}</span></div>`).join('')}</div><p class="mute small" style="margin:6px 0 0">Excludes rejected expenses.</p></div>`;
     }
-    $('#list').innerHTML = rows.length ? rows.map(e => `<div class="card"><div class="row sb"><span class="bold">${money(e.amount)} · ${esc(e.category || '')}</span><span class="tag ${{ approved: 'green', rejected: 'red', pending: 'amber' }[e.status]}">${esc(e.status)}</span></div>
-      <div class="small">${esc(e.vendor || '—')} · ${esc(e.date)} · ${esc(e.payment_method)}</div>${e.description ? `<div class="small mute">${esc(e.description)}</div>` : ''}
-      <div class="small mute">by ${esc(e.submitted_name || '?')}${e.approved_name && e.status !== 'pending' ? ` · ${e.status} by ${esc(e.approved_name)}` : ''}${e.reject_reason ? ` — ${esc(e.reject_reason)}` : ''}</div>
-      <div class="thumbs">${e.photos.map(ph => `<img src="/uploads/${esc(ph.filename)}" loading="lazy" onclick="lightbox('/uploads/${esc(ph.filename)}')">`).join('')}${e.photos.length ? '' : '<span class="small" style="color:var(--amber)">No receipt photo</span>'}</div>
-      <div class="row" style="margin-top:8px"><button class="btn sec sm" onclick="addPhotos(${e.id})">📷 Add photo</button>${(privileged || e.status === 'pending') ? `<button class="btn sec sm" onclick="editExpense(${e.id})">Edit</button>` : ''}
-      ${privileged && e.status === 'pending' ? `<button class="btn sm" onclick="decide(${e.id},'approved')">Approve</button><button class="btn red sm" onclick="decide(${e.id},'rejected')">Reject</button>` : ''}
-      ${can('accounts') ? `<button class="btn sec sm" onclick="delExpense(${e.id})">Delete</button>` : ''}</div></div>`).join('') : '<div class="card empty">No expenses for these filters.</div>';
+    const stTag = { approved: 'green', rejected: 'red', pending: 'amber' };
+    $('#list').innerHTML = rows.length ? `<div class="card flush scroll"><table><tr><th>Date</th><th>Details</th><th>Category</th><th>Paid by</th><th class="num">Amount</th><th>Status</th><th>Receipt</th><th></th></tr>${rows.map(e => `<tr>
+      <td class="small" style="white-space:nowrap">${esc(e.date)}</td>
+      <td><div class="bold">${esc(e.vendor || '—')}</div><div class="small mute">${esc(e.description || '')}${e.location ? ' · ' + esc(e.location) : ''}</div>${e.reject_reason ? `<div class="small" style="color:var(--red)">Rejected: ${esc(e.reject_reason)}</div>` : ''}</td>
+      <td>${esc(e.category || '')}</td>
+      <td class="small">${esc(e.submitted_name || '?')}<div class="mute">${esc(e.payment_method)}</div></td>
+      <td class="num bold">${money(e.amount)}</td>
+      <td><span class="tag ${stTag[e.status]}">${esc(e.status)}</span>${e.approved_name && e.status !== 'pending' ? `<div class="small mute">by ${esc(e.approved_name)}</div>` : ''}</td>
+      <td><div class="thumbs">${e.photos.map(ph => `<img src="/uploads/${esc(ph.filename)}" loading="lazy" onclick="lightbox('/uploads/${esc(ph.filename)}')">`).join('')}${e.photos.length ? '' : '<span class="small" style="color:var(--amber)">None</span>'}</div></td>
+      <td class="r" style="white-space:nowrap"><button class="btn sec sm" onclick="addPhotos(${e.id})" title="Add receipt photo">📷</button> ${(privileged || e.status === 'pending') ? `<button class="btn sec sm" onclick="editExpense(${e.id})">Edit</button> ` : ''}${privileged && e.status === 'pending' ? `<button class="btn sm" onclick="decide(${e.id},'approved')">Approve</button> <button class="btn red sm" onclick="decide(${e.id},'rejected')">Reject</button> ` : ''}${can('accounts') ? `<button class="btn sec sm" onclick="delExpense(${e.id})">Delete</button>` : ''}</td></tr>`).join('')}</table></div>` : '<div class="card empty">No expenses for these filters.</div>';
     window._exp = rows;
   };
   ['ef', 'et', 'ec', 'es'].forEach(i => $('#' + i).onchange = () => guard(draw)); await draw();
@@ -471,7 +555,7 @@ routes.more = async v => {
   v.innerHTML = head('More') + `<div class="grid g2">${SIDE_EXTRA.filter(n => n[0] !== 'admin' || can()).map(n => `<a class="stat" href="#/${n[0]}"><div class="bold">${n[1]}</div></a>`).join('')}</div>
   <div class="row" style="margin-top:14px"><button class="btn sec" id="pw">Change my password</button><button class="btn sec" id="lo">Sign out</button></div><p class="mute small">Signed in as ${esc(me.name)} (${esc(me.role)})</p>`;
   $('#lo').onclick = async () => { await post('/api/logout'); me = null; renderLogin(); };
-  $('#pw').onclick = () => modal('Change password', fields([{ n: 'current', label: 'Current password', type: 'password', req: true }, { n: 'next', label: 'New password (8+ characters)', type: 'password', req: true }]), { onSubmit: async (f, d) => { await post('/api/me/password', d); closeModal(); toast('Password changed'); } });
+  $('#pw').onclick = changePw;
 };
 
 // ====== ADMIN / SETTINGS ======
