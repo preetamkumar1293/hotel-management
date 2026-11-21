@@ -8,10 +8,15 @@ const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')
 const todayStr = () => ymd(new Date());
 const dt = s => s ? new Date(s.includes('T') || s.length > 10 ? s.replace(' ', 'T') + (s.includes('Z') || s.length <= 10 ? '' : 'Z') : s + 'T00:00:00').toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: s.length > 10 ? '2-digit' : undefined, minute: s.length > 10 ? '2-digit' : undefined }) : '';
 let me = null, cache = {};
+const curProp = () => { let v = 'all'; try { v = localStorage.getItem('prop') || 'all'; } catch { } const ps = me?.properties || []; if (ps.length === 1) return String(ps[0].id); return ps.some(p => String(p.id) === v) ? v : 'all'; };
+const setProp = v => { try { localStorage.setItem('prop', String(v)); } catch { } };
+const needsPick = () => (me?.properties || []).length > 1 && curProp() === 'all';
+const propField = () => needsPick() ? [{ n: 'property_id', label: 'Property', type: 'select', blank: '— choose property —', req: true, opts: me.properties.map(p => [p.id, p.name]) }] : [];
+const propName = () => curProp() === 'all' ? 'All properties' : (me.properties.find(p => String(p.id) === curProp())?.name || '');
 
 function toast(msg, isErr) { const t = $('#toast'); t.textContent = msg; t.className = 'show' + (isErr ? ' err' : ''); clearTimeout(toast.t); toast.t = setTimeout(() => t.className = '', 3200); }
 async function api(method, url, body, isForm) {
-  const opt = { method, credentials: 'same-origin', headers: {} };
+  const opt = { method, credentials: 'same-origin', headers: { 'X-Requested-With': 'hotel-app', 'X-Property': curProp() } };
   if (body !== undefined) { if (isForm) opt.body = body; else { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); } }
   const r = await fetch(url, opt);
   if (r.status === 401 && url !== '/api/login') { me = null; renderLogin(); throw new Error('Please sign in'); }
@@ -82,7 +87,7 @@ const ic = (n, s = 18) => `<svg class="ic" width="${s}" height="${s}" viewBox="0
 const MENU = [
   ['home', 'Dashboard', 'home'],
   ['_', 'Inventory'], ['stock', 'Stock items', 'box'], ['assets', 'Assets', 'tag'], ['restock', 'Restock list', 'list'], ['po', 'Purchasing', 'cart'],
-  ['_', 'Hotel'], ['rooms', 'Rooms', 'bed'], ['audit', 'Room audit', 'check'], ['scan', 'Scan', 'scan'], ['labels', 'Barcode labels', 'barcode'],
+  ['_', 'Operations'], ['rooms', 'Rooms', 'bed'], ['audit', 'Room audit', 'check'], ['scan', 'Scan', 'scan'], ['labels', 'Barcode labels', 'barcode'],
   ['_', 'Finance'], ['expenses', 'Expenses', 'receipt'],
   ['_', 'Insights'], ['reports', 'Reports', 'chart'], ['admin', 'Settings', 'gear', 'manager']
 ];
@@ -104,10 +109,11 @@ window.changePw = () => modal('Change password', fields([{ n: 'current', label: 
 async function doLogout() { await post('/api/logout'); me = null; renderLogin(); }
 
 function renderShell() {
-  $('#app').innerHTML = `<div class="shell"><nav class="side"><div class="logo"><i>🏨</i>Hotel Stock</div>
+  $('#app').innerHTML = `<div class="shell"><nav class="side"><div class="logo"><img src="/logo.png" alt="Papppy Stays"></div>
     ${MENU.filter(m => !m[3] || can(m[3])).map(m => m[0] === '_' ? `<div class="grp">${m[1]}</div>` : `<a href="#/${m[0]}" data-nav="${m[0]}">${ic(m[2])}<span>${m[1]}</span></a>`).join('')}
     <div class="sp"></div><div class="who">${esc(me.name)} · ${esc(me.role)}</div></nav>
-    <div class="content"><header class="topbar"><div class="brand-m">Hotel Stock</div>
+    <div class="content"><header class="topbar"><div class="brand-m"><img src="/favicon.png" alt="Papppy Stays"></div>
+      ${(me.properties || []).length ? `<button class="propsw" id="psw" title="Switch property">${ic('bed', 15)}<span>${esc(propName())}</span>${me.properties.length > 1 ? '<b>▾</b>' : ''}</button>` : ''}
       <div class="gsearch"><span class="gs-ic">${ic('search', 16)}</span><input id="gs" placeholder="Search rooms, assets, items — or type a code" autocomplete="off"><div id="gsr" class="gs-res"></div></div>
       <div class="tb-right"><button class="btn" id="quick">${ic('plus', 16)}<span class="qt">New</span></button><button class="avatar" id="usr" title="${esc(me.name)}">${esc(initials(me.name))}</button></div></header>
     <main class="main" id="view"></main></div></div>
@@ -122,8 +128,17 @@ function renderShell() {
     const p = popMenu(e.currentTarget, `<div class="pi"><b>${esc(me.name)}</b><br>${esc(me.email)} · ${esc(me.role)}</div><button data-a="pw">Change password</button><button data-a="out">Sign out</button>`);
     p.querySelector('[data-a=pw]').onclick = changePw; p.querySelector('[data-a=out]').onclick = doLogout;
   };
+  if ($('#psw') && me.properties.length > 1) $('#psw').onclick = e => {
+    e.stopPropagation();
+    const cur = curProp();
+    const p = popMenu(e.currentTarget, `<div class="pi mute small">Working in</div><button data-p="all" class="${cur === 'all' ? 'cur' : ''}">All properties</button>${me.properties.map(x => `<button data-p="${x.id}" class="${cur === String(x.id) ? 'cur' : ''}">${esc(x.name)}<span class="mute small"> ${esc(x.city || '')}</span></button>`).join('')}`);
+    p.style.left = '8px'; p.style.right = 'auto';
+    p.querySelectorAll('[data-p]').forEach(b => b.onclick = () => { setProp(b.dataset.p); audit = null; renderShell(); route(); });
+  };
   wireSearch();
 }
+// after scanning a code that belongs to another property, switch to it
+function followProperty(r) { if (r.property_id && curProp() !== 'all' && String(r.property_id) !== curProp()) { setProp(r.property_id); renderShell(); toast('Switched to ' + propName()); } }
 let gsT;
 function wireSearch() {
   const inp = $('#gs'), box = $('#gsr'); const hide = () => box.classList.remove('on');
@@ -141,17 +156,17 @@ function wireSearch() {
     }, 220);
   });
   inp.addEventListener('keydown', async e => {
-    if (e.key === 'Enter') { const c = inp.value.trim(); if (!c) return; try { const r = await get('/api/resolve?code=' + encodeURIComponent(c)); go(`#/${r.type === 'location' ? 'room' : r.type}/${r.id}`); inp.value = ''; hide(); } catch { } }
+    if (e.key === 'Enter') { const c = inp.value.trim(); if (!c) return; try { const r = await get('/api/resolve?code=' + encodeURIComponent(c)); followProperty(r); go(`#/${r.type === 'location' ? 'room' : r.type}/${r.id}`); inp.value = ''; hide(); } catch { } }
     if (e.key === 'Escape') { hide(); inp.blur(); }
   });
   document.addEventListener('click', e => { if (!e.target.closest('.gsearch')) hide(); });
   box.addEventListener('click', () => { inp.value = ''; hide(); });
 }
 function renderLogin(err) {
-  $('#app').innerHTML = `<div class="login-wrap"><div class="login"><h1 style="text-align:center;margin-bottom:4px;color:#fff;font-size:24px">🏨 Hotel Stock</h1><p style="text-align:center;margin-top:0;color:#aab6cc">Sign in to continue</p>
+  $('#app').innerHTML = `<div class="login-wrap"><div class="login"><div class="login-logo"><img src="/logo.png" alt="Papppy Stays"></div><p style="text-align:center;margin-top:0;color:#aab6cc">Stock, assets &amp; expenses · sign in to continue</p>
   <form class="card" id="lf"><label>Email</label><input name="email" type="email" autocomplete="username" required autofocus><label>Password</label><input name="password" type="password" autocomplete="current-password" required>
   <div class="err">${esc(err || '')}</div><button class="btn big" style="width:100%;margin-top:14px;justify-content:center">Sign in</button></form></div></div>`;
-  $('#lf').onsubmit = async e => { e.preventDefault(); try { me = await post('/api/login', readForm(e.target)); renderShell(); route(); } catch (er) { renderLogin(er.message); } };
+  $('#lf').onsubmit = async e => { e.preventDefault(); try { await post('/api/login', readForm(e.target)); me = await get('/api/me'); renderShell(); route(); } catch (er) { renderLogin(er.message); } };
 }
 const routes = {};
 async function route() {
@@ -184,7 +199,7 @@ routes.home = async v => {
     b.checkout >= t && b.checkout <= t3 ? { room: b.room, id: b.location_id, guest: b.guest, ev: 'Departs', date: b.checkout } : null]).filter(Boolean).sort((a, b) => a.date.localeCompare(b.date) || a.room.localeCompare(b.room));
   const dirty = locs.filter(l => l.type === 'room' && l.status === 'dirty');
   const W = (title, link, body) => `<div class="card flush"><div class="ch"><h2>${title}</h2>${link || ''}</div>${body}</div>`;
-  v.innerHTML = head('Dashboard', `<span class="mute small">${esc(new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))}</span>`) +
+  v.innerHTML = head('Dashboard · ' + esc(propName()), `<span class="mute small">${esc(new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))}</span>`) +
     `<div class="kpis">
     ${K('bed', `${d.occupied}<span class="mute" style="font-size:14px;font-weight:500"> / ${d.rooms}</span>`, 'Rooms occupied', '#/rooms')}
     ${K('users', `${d.arrivals} · ${d.departures}`, 'Arrivals · Departures today', '#/rooms')}
@@ -195,6 +210,7 @@ routes.home = async v => {
     ${K('tool', d.assets_in_repair, 'Assets needing repair', '#/assets?c=needs_repair', d.assets_in_repair ? 'warn' : 'good')}
     ${priv ? K('wallet', money(d.month_spend), 'Spend this month', '#/expenses') : ''}
     ${priv ? K('receipt', d.pending_expenses.n, `Awaiting approval (${money(d.pending_expenses.t)})`, '#/expenses?s=pending', d.pending_expenses.n ? 'warn' : 'good') : ''}</div>
+    ${d.by_property.length > 1 ? W('By property', '', `<div class="scroll"><table><tr><th>Property</th><th class="num">Occupied</th>${priv ? '<th class="num">Spend this month</th>' : ''}</tr>${d.by_property.map(p => `<tr class="click" onclick="pickProp(${p.id})"><td class="bold">${esc(p.name)}</td><td class="num">${p.occupied} / ${p.rooms}</td>${priv ? `<td class="num">${money(p.month_spend)}</td>` : ''}</tr>`).join('')}</table></div>`) : ''}
     <div class="cols">
     ${W('Arrivals & departures · next 3 days', '<a class="small" href="#/rooms">Rooms →</a>', moves.length ? `<div class="scroll"><table><tr><th>Date</th><th>Room</th><th>Guest</th><th></th></tr>${moves.slice(0, 8).map(m => `<tr class="click" onclick="go('#/room/${m.id}')"><td class="small">${esc(dt(m.date))}</td><td class="bold">${esc(m.room)}</td><td>${esc(m.guest || '—')}</td><td><span class="tag ${m.ev === 'Arrives' ? 'green' : 'amber'}">${m.ev}</span></td></tr>`).join('')}</table></div>` : '<div class="empty">No movements in the next 3 days.</div>')}
     ${W('Rooms to clean', '<a class="small" href="#/rooms">All rooms →</a>', dirty.length ? `<div style="padding:12px 16px">${dirty.map(r => `<a class="chip" style="text-decoration:none;color:inherit" href="#/room/${r.id}">${esc(r.name)}</a>`).join('')}</div>` : '<div class="empty">Every room is clean ✅</div>')}
@@ -221,7 +237,7 @@ async function startScanner(elId, onCode) {
   } catch (e) { scanner = null; $('#' + elId).innerHTML = `<div class="empty">Could not open the camera (${esc(e.message || e)}). Allow camera access in the browser, or type the code below.</div>`; }
 }
 async function resolveCode(code) {
-  try { const r = await get('/api/resolve?code=' + encodeURIComponent(code)); go(`#/${r.type === 'location' ? 'room' : r.type}/${r.id}`); }
+  try { const r = await get('/api/resolve?code=' + encodeURIComponent(code)); followProperty(r); go(`#/${r.type === 'location' ? 'room' : r.type}/${r.id}`); }
   catch (e) { toast(e.message, true); }
 }
 routes.scan = async v => {
@@ -263,6 +279,7 @@ routes.room = async (v, id, tab = 'contents') => {
     `<div class="tabs">${tabs}</div>` + body;
 };
 window.go = go;
+window.pickProp = id => { setProp(id); renderShell(); route(); };
 window.setRoomStatus = (id, s) => guard(async () => { await post(`/api/locations/${id}/status`, { status: s }); toast('Updated'); route(); });
 window.useStock = (item_id, loc) => modal('Record usage', fields([{ n: 'qty', label: 'How many used / restocked out?', type: 'number', step: 'any', req: true, auto: true, value: 1 }, { n: 'note', label: 'Note (optional)' }]), {
   submitLabel: 'Record', onSubmit: async (f, d) => { await post('/api/stock/consume', { item_id, location_id: loc, qty: d.qty, note: d.note }); closeModal(); toast('Recorded'); route(); }
@@ -411,11 +428,11 @@ routes.po = async v => {
   if ($('#newsup')) $('#newsup').onclick = () => modal('New supplier', fields([{ n: 'name', label: 'Name', req: true }, { n: 'phone', label: 'Phone' }, { n: 'email', label: 'Email' }]), { onSubmit: async (f, d) => { await post('/api/suppliers', d); closeModal(); toast('Added'); } });
   if ($('#newpo')) $('#newpo').onclick = async () => {
     const [sups, items] = await Promise.all([get('/api/suppliers'), get('/api/items')]);
-    const form = modal('New purchase order', fields([{ n: 'supplier_id', label: 'Supplier', type: 'select', blank: '— choose —', opts: sups.map(s => [s.id, s.name]) }]) +
+    const form = modal('New purchase order', fields([...propField(), { n: 'supplier_id', label: 'Supplier', type: 'select', blank: '— choose —', opts: sups.map(s => [s.id, s.name]) }]) +
       `<div id="lines"></div><button type="button" class="btn sec sm" id="addl" style="margin-top:8px">+ Add line</button>`, {
       submitLabel: 'Create order', onSubmit: async (f, d) => {
         const lines = [...f.querySelectorAll('.pl')].map(r => ({ item_id: +r.querySelector('[name=item]').value, qty: r.querySelector('[name=q]').value, unit_cost: r.querySelector('[name=c]').value })).filter(l => l.item_id && l.qty);
-        await post('/api/pos', { supplier_id: d.supplier_id || null, lines }); closeModal(); route();
+        await post('/api/pos', { supplier_id: d.supplier_id || null, property_id: d.property_id, lines }); closeModal(); route();
       }
     });
     const addLine = () => { const d = document.createElement('div'); d.className = 'pl f2'; d.style.gridTemplateColumns = '2fr 1fr 1fr'; d.innerHTML = `<select name="item"><option value="">Item…</option>${items.map(i => `<option value="${i.id}" data-c="${i.cost}">${esc(i.name)}</option>`).join('')}</select><input name="q" type="number" step="any" placeholder="Qty"><input name="c" type="number" step="any" placeholder="₹ each">`; d.querySelector('select').onchange = e => { d.querySelector('[name=c]').value = e.target.selectedOptions[0].dataset.c || ''; }; $('#lines').appendChild(d); };
@@ -443,12 +460,12 @@ routes.expenses = async (v, sub) => {
     if (privileged) {
       const s = await get('/api/expenses/summary?' + new URLSearchParams({ from: p.get('from'), to: p.get('to'), category: p.get('category') }));
       const max = Math.max(1, ...s.by_category.map(c => c.total));
-      $('#sum').innerHTML = `<div class="card"><div class="row sb"><h2 style="margin:0">Total ${money(s.total)}</h2><a class="btn sec sm" href="/api/expenses.csv?${p}">⬇ CSV</a></div><div style="margin-top:8px">${s.by_category.map(c => `<div class="barrow"><span>${esc(c.category)}</span><div><div class="bar" style="width:${Math.max(3, c.total / max * 100)}%"></div></div><span class="r">${money(c.total)}</span></div>`).join('')}</div><p class="mute small" style="margin:6px 0 0">Excludes rejected expenses.</p></div>`;
+      $('#sum').innerHTML = `<div class="card"><div class="row sb"><h2 style="margin:0">Total ${money(s.total)}</h2><a class="btn sec sm" href="/api/expenses.csv?${p}&prop=${curProp()}">⬇ CSV</a></div><div style="margin-top:8px">${s.by_category.map(c => `<div class="barrow"><span>${esc(c.category)}</span><div><div class="bar" style="width:${Math.max(3, c.total / max * 100)}%"></div></div><span class="r">${money(c.total)}</span></div>`).join('')}</div><p class="mute small" style="margin:6px 0 0">Excludes rejected expenses.</p></div>`;
     }
     const stTag = { approved: 'green', rejected: 'red', pending: 'amber' };
     $('#list').innerHTML = rows.length ? `<div class="card flush scroll"><table><tr><th>Date</th><th>Details</th><th>Category</th><th>Paid by</th><th class="num">Amount</th><th>Status</th><th>Receipt</th><th></th></tr>${rows.map(e => `<tr>
       <td class="small" style="white-space:nowrap">${esc(e.date)}</td>
-      <td><div class="bold">${esc(e.vendor || '—')}</div><div class="small mute">${esc(e.description || '')}${e.location ? ' · ' + esc(e.location) : ''}</div>${e.reject_reason ? `<div class="small" style="color:var(--red)">Rejected: ${esc(e.reject_reason)}</div>` : ''}</td>
+      <td><div class="bold">${esc(e.vendor || '—')}</div><div class="small mute">${me.properties.length > 1 && e.property ? '<span class="tag">' + esc(e.property) + '</span> ' : ''}${esc(e.description || '')}${e.location ? ' · ' + esc(e.location) : ''}</div>${e.reject_reason ? `<div class="small" style="color:var(--red)">Rejected: ${esc(e.reject_reason)}</div>` : ''}</td>
       <td>${esc(e.category || '')}</td>
       <td class="small">${esc(e.submitted_name || '?')}<div class="mute">${esc(e.payment_method)}</div></td>
       <td class="num bold">${money(e.amount)}</td>
@@ -464,7 +481,7 @@ async function expenseForm(v, e) {
   const html = `<form id="ef" class="card">${fields([{ n: 'amount', label: 'Amount (₹)', type: 'number', step: 'any', req: true, auto: true, value: e?.amount }, { n: 'date', label: 'Date', type: 'date', req: true, value: e?.date || todayStr() },
     { n: 'category', label: 'Category', type: 'select', opts: cats, req: true, value: e?.category }, { n: 'vendor', label: 'Paid to / vendor', value: e?.vendor },
     { n: 'payment_method', label: 'Paid by', type: 'select', opts: ['cash', 'upi', 'card', 'bank transfer', 'credit'], value: e?.payment_method }, { n: 'description', label: 'What was it for?', type: 'textarea', value: e?.description },
-    { n: 'location_id', label: 'Related room / place (optional)', type: 'select', blank: '— none —', opts: locs, value: e?.location_id }])}
+    { n: 'location_id', label: 'Related room / place (optional)', type: 'select', blank: '— none —', opts: locs, value: e?.location_id }, ...(e ? [] : propField())])}
     ${e ? '' : `<label>Receipt / bill photos</label><input type="file" id="ph" accept="image/*" capture="environment" multiple><input type="file" id="ph2" accept="image/*" multiple style="margin-top:6px"><div class="thumbs" id="prev"></div><p class="small mute">Take a photo of the bill now, or choose from your gallery. Photos are resized automatically.</p>`}
     <div class="err" id="eerr"></div><div class="row" style="margin-top:12px"><button class="btn big">${e ? 'Save' : 'Submit expense'}</button><a class="btn sec big" href="#/expenses">Cancel</a></div></form>`;
   if (v) v.innerHTML = head(e ? 'Edit expense' : 'New expense') + html; else modal('Edit expense', '', { hideSubmit: true });
@@ -561,7 +578,7 @@ routes.more = async v => {
 // ====== ADMIN / SETTINGS ======
 routes.admin = async (v, tab = 'locations') => {
   if (!can('manager')) throw new Error('Managers only');
-  const T = [['locations', 'Rooms & places'], ['templates', 'Room standards'], ['integrations', 'Airbnb & PMS']].concat(can() ? [['users', 'Users']] : []);
+  const T = [['locations', 'Rooms & places'], ['templates', 'Room standards'], ['integrations', 'Airbnb & PMS']].concat(can() ? [['properties', 'Properties'], ['users', 'Users']] : []);
   const tabs = `<div class="tabs">${T.map(t => `<a class="${tab === t[0] ? 'on' : ''}" href="#/admin/${t[0]}">${t[1]}</a>`).join('')}</div>`;
   let body = '';
   if (tab === 'locations') {
@@ -577,33 +594,55 @@ routes.admin = async (v, tab = 'locations') => {
   }
   if (tab === 'integrations') {
     const s = await get('/api/settings'); const store = await locOptions(['store']);
+    window._pmsProps = await get('/api/properties');
     body = `<div class="card"><h2>Airbnb calendars</h2><ol class="small"><li>In Airbnb → Calendar → Availability → <b>Export calendar</b>, copy the link for the listing.</li><li>Open the matching room under <b>Rooms & places → Edit</b> and paste it in “Airbnb calendar link”.</li><li>Press the button below (it also syncs automatically every 30 minutes).</li></ol>
       <button class="btn" id="sync">Sync Airbnb now</button> <span class="small mute">Last sync: ${esc(s.last_sync || 'never')}</span><div id="syncres" class="small"></div></div>
       <div class="card"><h2>PMS connection</h2><p class="small">Your PMS (or its channel manager / Zapier) sends booking, check-in, check-out and room-status events to this address with your key:</p>
       <div class="small mute">Endpoint (POST, JSON)</div><div class="code">${esc(s.pms_endpoint)}</div><div class="small mute" style="margin-top:8px">Header <b>x-api-key</b></div><div class="code">${esc(s.pms_api_key)}</div>
-      <div class="small mute" style="margin-top:8px">Example body</div><div class="code">{"event":"checkout","room":"R-101","uid":"RES123"}<br>{"event":"booking","room":"R-101","uid":"RES124","guest":"A Sharma","checkin":"2026-12-01","checkout":"2026-12-04"}<br>events: booking, checkin, checkout, cancel, room_status</div>
+      <div class="small mute" style="margin-top:8px">Property codes (add <b>"property":"CODE"</b> to an event when two properties use the same room names)</div><div class="code">${esc((window._pmsProps || []).map(p => p.code + ' = ' + p.name).join(' · '))}</div><div class="small mute" style="margin-top:8px">Example body</div><div class="code">{"event":"checkout","room":"R-101","uid":"RES123"}<br>{"event":"booking","room":"R-101","uid":"RES124","guest":"A Sharma","checkin":"2026-12-01","checkout":"2026-12-04"}<br>events: booking, checkin, checkout, cancel, room_status</div>
       <p class="small mute">“room” can be the room code, the room name, or the “PMS room ID” you set on the room. Checkout marks the room dirty so housekeeping sees it.</p><button class="btn sec sm" id="regen">Generate a new key</button></div>
       ${can() ? '<div class="card"><h2>Backup</h2><p class="small mute">Download a copy of all data (stock, assets, expenses). Do this regularly. Receipt photos live in the server’s data/uploads folder.</p><a class="btn sec sm" href="/api/backup">⬇ Download database backup</a></div>' : ''}
-      <div class="card"><h2>Main store</h2><p class="small mute">Restock lists are filled from this store.</p><select id="ms">${store.map(o => `<option value="${o[0]}" ${o[0] == s.main_store_id ? 'selected' : ''}>${esc(o[1])}</option>`).join('')}</select></div>`;
+      <div class="card"><h2>Main store · ${esc(propName())}</h2><p class="small mute">Restock lists for this property are filled from this store.${needsPick() ? ' <b>Choose a single property in the top bar to set it.</b>' : ''}</p><select id="ms" ${needsPick() ? 'disabled' : ''}>${store.map(o => `<option value="${o[0]}" ${o[0] == s.main_store_id ? 'selected' : ''}>${esc(o[1])}</option>`).join('')}</select></div>`;
+  }
+  if (tab === 'properties') {
+    if (!can()) throw new Error('Admins only');
+    const ps = await get('/api/properties'); window._props = ps;
+    body = `<button class="btn sm" id="addprop">+ Add property</button><p class="small mute" style="margin-top:8px">Each property has its own rooms, stock, assets and expenses. Use the switcher in the top bar to work in one property or see all together.</p>` +
+      ps.map(p => `<div class="card"><div class="row sb"><div><h2 style="margin:0">${esc(p.name)} <span class="code">${esc(p.code)}</span> ${p.active ? '' : '<span class="tag red">inactive</span>'}</h2><div class="small mute">${esc(p.legal_name || '')}</div></div><button class="btn sec sm" onclick="editProp(${p.id})">Edit details</button></div>
+      <div class="f2" style="margin-top:10px"><div><div class="mute small">Address</div>${esc([p.address, p.city, p.state, p.pincode].filter(Boolean).join(', ') || '—')}</div><div><div class="mute small">Contact</div>${esc([p.phone, p.email].filter(Boolean).join(' · ') || '—')}</div>
+      <div><div class="mute small">GSTIN</div>${esc(p.gstin || '—')}</div><div><div class="mute small">Check-in / out</div>${esc(p.checkin_time || '—')} / ${esc(p.checkout_time || '—')}</div></div>
+      <div class="small mute" style="margin-top:8px">${p.rooms} rooms · ${p.stores} store(s)${p.notes ? ' · ' + esc(p.notes) : ''}</div></div>`).join('');
   }
   if (tab === 'users') {
-    const u = await get('/api/users'); window._users = u;
-    body = `<button class="btn sm" id="adduser">+ Add user</button><div class="card scroll" style="margin-top:10px"><table>${u.map(x => `<tr><td>${esc(x.name)}<div class="small mute">${esc(x.email)}</div></td><td>${esc(x.role)} ${x.active ? '' : '<span class="tag red">off</span>'}</td><td class="r"><button class="btn sec sm" onclick="editUser(${x.id})">Edit</button></td></tr>`).join('')}</table></div>
+    const u = await get('/api/users'); window._users = u; window._props = await get('/api/properties');
+    body = `<button class="btn sm" id="adduser">+ Add user</button><div class="card scroll" style="margin-top:10px"><table>${u.map(x => `<tr><td>${esc(x.name)}<div class="small mute">${esc(x.email)}</div></td><td>${esc(x.role)} ${x.active ? '' : '<span class="tag red">off</span>'}<div class="small mute">${x.role === 'admin' || !x.property_ids ? 'All properties' : esc(String(x.property_ids).split(',').map(i => window._props.find(p => p.id == i)?.name).filter(Boolean).join(', '))}</div></td><td class="r"><button class="btn sec sm" onclick="editUser(${x.id})">Edit</button></td></tr>`).join('')}</table></div>
     <p class="small mute">Roles — <b>admin</b>: everything · <b>manager</b>: stock, assets, approvals, settings · <b>accounts</b>: expenses & purchasing · <b>housekeeping</b>: scan, use stock, audit rooms, submit own expenses.</p>`;
   }
   v.innerHTML = head('Settings') + tabs + body;
-  const locForm = (x = {}) => modal(x.id ? 'Edit place' : 'Add room / place', fields([{ n: 'name', label: 'Name', req: true, value: x.name }, { n: 'type', label: 'Type', type: 'select', opts: ['room', 'store', 'other'], value: x.type }, { n: 'room_type', label: 'Room type (Deluxe, Suite…)', value: x.room_type }, { n: 'floor', label: 'Floor', value: x.floor },
+  const locForm = (x = {}) => modal(x.id ? 'Edit place' : 'Add room / place', fields([...(x.id ? [] : propField()), { n: 'name', label: 'Name', req: true, value: x.name }, { n: 'type', label: 'Type', type: 'select', opts: ['room', 'store', 'other'], value: x.type }, { n: 'room_type', label: 'Room type (Deluxe, Suite…)', value: x.room_type }, { n: 'floor', label: 'Floor', value: x.floor },
     { n: 'code', label: 'Barcode text (blank = auto, e.g. R-101)', value: x.code, ph: 'e.g. R-101' }, { n: 'ical_url', label: 'Airbnb calendar link (https://…)', value: x.ical_url }, { n: 'pms_room_id', label: 'PMS room ID', value: x.pms_room_id }].concat(x.id ? [{ n: 'active', label: 'Active', type: 'select', opts: [[1, 'Yes'], [0, 'No — hide']], value: x.active }] : [])),
     { onSubmit: async (f, d) => { x.id ? await put('/api/locations/' + x.id, { ...d, active: +d.active }) : await post('/api/locations', d); closeModal(); route(); } });
   window.editLoc = id => locForm(window._locs.find(l => l.id === id));
   if ($('#addloc')) $('#addloc').onclick = () => locForm();
-  if ($('#bulk')) $('#bulk').onclick = () => modal('Add many rooms', fields([{ n: 'from', label: 'First room number', type: 'number', req: true, value: 101 }, { n: 'to', label: 'Last room number', type: 'number', req: true, value: 120 }, { n: 'room_type', label: 'Room type', value: 'Deluxe' }, { n: 'floor', label: 'Floor' }]), { onSubmit: async (f, d) => { const a = +d.from, b = +d.to; if (b < a || b - a > 200) throw new Error('Check the range'); for (let n = a; n <= b; n++) await post('/api/locations', { name: 'Room ' + n, code: 'R-' + n, type: 'room', room_type: d.room_type, floor: d.floor }).catch(() => { }); closeModal(); route(); } });
+  if ($('#bulk')) $('#bulk').onclick = () => modal('Add many rooms', fields([...propField(), { n: 'from', label: 'First room number', type: 'number', req: true, value: 101 }, { n: 'to', label: 'Last room number', type: 'number', req: true, value: 120 }, { n: 'room_type', label: 'Room type', value: 'Deluxe' }, { n: 'floor', label: 'Floor' }]), { onSubmit: async (f, d) => { const a = +d.from, b = +d.to; if (b < a || b - a > 200) throw new Error('Check the range'); for (let n = a; n <= b; n++) await post('/api/locations', { property_id: d.property_id, name: 'Room ' + n, code: 'R-' + n, type: 'room', room_type: d.room_type, floor: d.floor }).catch(() => { }); closeModal(); route(); } });
   window.editTpl = ty => { const cur = window._tpl.filter(r => r.room_type === ty); modal('Standard for ' + ty, window._items.map(i => `<div class="row sb" style="margin:6px 0"><span>${esc(i.name)}</span><input data-i="${i.id}" type="number" min="0" step="1" style="width:80px" value="${cur.find(c => c.item_id === i.id)?.qty || 0}"></div>`).join('') || '<p class="mute">Create asset types first.</p>', { onSubmit: async f => { await put('/api/templates/' + encodeURIComponent(ty), { lines: [...f.querySelectorAll('[data-i]')].map(x => ({ item_id: +x.dataset.i, qty: +x.value })) }); closeModal(); route(); } }); };
   if ($('#sync')) $('#sync').onclick = () => guard(async () => { $('#sync').disabled = true; const r = await post('/api/sync/ical'); $('#sync').disabled = false; $('#syncres').innerHTML = r.length ? r.map(x => `<div>${x.ok ? '✅' : '❌'} ${esc(x.room)} — ${x.ok ? x.events + ' events' : esc(x.error)}</div>`).join('') : 'No rooms have a calendar link yet.'; });
   if ($('#regen')) $('#regen').onclick = () => guard(async () => { if (confirm('The old key will stop working. Continue?')) { await put('/api/settings', { regenerate_key: true }); route(); } });
-  if ($('#ms')) $('#ms').onchange = () => guard(async () => { await put('/api/settings', { main_store_id: $('#ms').value }); toast('Saved'); });
-  if ($('#adduser')) $('#adduser').onclick = () => modal('Add user', fields([{ n: 'name', label: 'Name', req: true }, { n: 'email', label: 'Email', type: 'email', req: true }, { n: 'password', label: 'Password (8+ characters)', type: 'password', req: true }, { n: 'role', label: 'Role', type: 'select', opts: ['housekeeping', 'accounts', 'manager', 'admin'] }]), { onSubmit: async (f, d) => { await post('/api/users', d); closeModal(); route(); } });
-  window.editUser = id => { const u = window._users.find(x => x.id === id); modal('Edit user', fields([{ n: 'name', label: 'Name', value: u.name }, { n: 'role', label: 'Role', type: 'select', opts: ['housekeeping', 'accounts', 'manager', 'admin'], value: u.role }, { n: 'active', label: 'Active', type: 'select', opts: [[1, 'Yes'], [0, 'No']], value: u.active }, { n: 'password', label: 'New password (leave blank to keep)', type: 'password' }]), { onSubmit: async (f, d) => { const b = { name: d.name, role: d.role, active: +d.active }; if (d.password) b.password = d.password; await put('/api/users/' + id, b); closeModal(); route(); } }); };
+  if ($('#ms')) $('#ms').onchange = () => guard(async () => { await put('/api/settings', { main_store_id: $('#ms').value, property_id: curProp() === 'all' ? undefined : curProp() }); toast('Saved'); });
+  const propBoxes = sel => `<label>Can work in</label><div>${(window._props || []).filter(p => p.active).map(p => `<label style="display:flex;gap:8px;align-items:center;margin:3px 0;color:var(--ink);font-size:14px"><input type="checkbox" name="pp" value="${p.id}" style="width:auto" ${(sel || []).includes(String(p.id)) ? 'checked' : ''}> ${esc(p.name)}</label>`).join('')}</div><p class="small mute">Leave all unticked for access to every property. Admins always see all.</p>`;
+  const picked = f => [...f.querySelectorAll('[name=pp]:checked')].map(x => +x.value);
+  if ($('#adduser')) $('#adduser').onclick = () => modal('Add user', fields([{ n: 'name', label: 'Name', req: true }, { n: 'email', label: 'Email', type: 'email', req: true }, { n: 'password', label: 'Password (8+ characters)', type: 'password', req: true }, { n: 'role', label: 'Role', type: 'select', opts: ['housekeeping', 'accounts', 'manager', 'admin'] }]) + propBoxes([]), { onSubmit: async (f, d) => { await post('/api/users', { ...d, property_ids: picked(f) }); closeModal(); route(); } });
+  const propForm = (p = {}) => modal(p.id ? 'Edit property' : 'Add property', fields([
+    { n: 'name', label: 'Property name (shown in the app)', req: true, value: p.name }, { n: 'code', label: 'Short code (2-12 letters/digits, e.g. JPR1)', req: true, value: p.code },
+    { n: 'legal_name', label: 'Legal / business name', value: p.legal_name }, { n: 'address', label: 'Address', type: 'textarea', value: p.address },
+    { n: 'city', label: 'City', value: p.city }, { n: 'state', label: 'State', value: p.state }, { n: 'pincode', label: 'PIN code', value: p.pincode },
+    { n: 'phone', label: 'Phone', value: p.phone }, { n: 'email', label: 'Email', type: 'email', value: p.email }, { n: 'gstin', label: 'GSTIN', value: p.gstin },
+    { n: 'checkin_time', label: 'Standard check-in time', type: 'time', value: p.checkin_time || '12:00' }, { n: 'checkout_time', label: 'Standard check-out time', type: 'time', value: p.checkout_time || '11:00' },
+    { n: 'notes', label: 'Notes', type: 'textarea', value: p.notes }].concat(p.id ? [{ n: 'active', label: 'Status', type: 'select', opts: [[1, 'Active'], [0, 'Inactive — hide everywhere']], value: p.active }] : [])),
+    { onSubmit: async (f, d) => { if (p.id) await put('/api/properties/' + p.id, { ...d, active: +d.active }); else await post('/api/properties', d); me = await get('/api/me'); closeModal(); renderShell(); route(); toast('Saved'); } });
+  window.editProp = id => propForm(window._props.find(p => p.id === id));
+  if ($('#addprop')) $('#addprop').onclick = () => propForm();
+  window.editUser = id => { const u = window._users.find(x => x.id === id); modal('Edit user', fields([{ n: 'name', label: 'Name', value: u.name }, { n: 'role', label: 'Role', type: 'select', opts: ['housekeeping', 'accounts', 'manager', 'admin'], value: u.role }, { n: 'active', label: 'Active', type: 'select', opts: [[1, 'Yes'], [0, 'No']], value: u.active }, { n: 'password', label: 'New password (leave blank to keep)', type: 'password' }]) + propBoxes(String(u.property_ids || '').split(',')), { onSubmit: async (f, d) => { const b = { name: d.name, role: d.role, active: +d.active, property_ids: picked(f) }; if (d.password) b.password = d.password; await put('/api/users/' + id, b); closeModal(); route(); } }); };
 };
 
 // ====== boot ======

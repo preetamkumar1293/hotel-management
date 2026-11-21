@@ -82,6 +82,27 @@ CREATE INDEX IF NOT EXISTS idx_book_loc ON bookings(location_id, checkin, checko
 CREATE INDEX IF NOT EXISTS idx_exp_date ON expenses(date);
 `);
 
+// ---------- multi-property ----------
+db.exec(`
+CREATE TABLE IF NOT EXISTS properties (
+  id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, legal_name TEXT,
+  address TEXT, city TEXT, state TEXT, pincode TEXT, phone TEXT, email TEXT, gstin TEXT,
+  checkin_time TEXT DEFAULT '12:00', checkout_time TEXT DEFAULT '11:00', notes TEXT,
+  main_store_id INTEGER, active INTEGER DEFAULT 1
+);`);
+const hasCol = (t, c) => db.prepare(`PRAGMA table_info(${t})`).all().some(r => r.name === c);
+for (const [t, c, d] of [['locations', 'property_id', 'INTEGER'], ['expenses', 'property_id', 'INTEGER'], ['purchase_orders', 'property_id', 'INTEGER'], ['users', 'property_ids', 'TEXT']])
+  if (!hasCol(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${d}`);
+if (!db.prepare('SELECT 1 FROM properties LIMIT 1').get()) {
+  const ms = db.prepare("SELECT value FROM settings WHERE key='main_store_id'").get();
+  db.prepare('INSERT INTO properties(code,name,legal_name,city,state,main_store_id) VALUES (?,?,?,?,?,?)')
+    .run('PAP1', process.env.PROPERTY_NAME || 'Papppy Stays', 'Papppy Hospitalities', 'Jaipur', 'Rajasthan', ms ? Number(ms.value) : null);
+}
+const firstProp = db.prepare('SELECT MIN(id) id FROM properties').get().id;
+db.exec(`UPDATE expenses SET property_id=(SELECT l.property_id FROM locations l WHERE l.id=expenses.location_id) WHERE property_id IS NULL AND location_id IS NOT NULL`);
+for (const t of ['locations', 'expenses', 'purchase_orders']) db.prepare(`UPDATE ${t} SET property_id=? WHERE property_id IS NULL`).run(firstProp);
+db.exec('CREATE INDEX IF NOT EXISTS idx_loc_prop ON locations(property_id); CREATE INDEX IF NOT EXISTS idx_exp_prop ON expenses(property_id);');
+
 const DEFAULT_EXPENSE_CATS = ['Groceries & F&B', 'Housekeeping supplies', 'Maintenance & repairs', 'Utilities', 'Salaries & wages', 'Laundry', 'Marketing & commissions', 'Equipment', 'Transport', 'Miscellaneous'];
 const insCat = db.prepare('INSERT OR IGNORE INTO expense_categories(name) VALUES (?)');
 DEFAULT_EXPENSE_CATS.forEach(c => insCat.run(c));
