@@ -770,8 +770,7 @@ if (!db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
   console.log(`First run: created admin ${process.env.ADMIN_EMAIL || 'admin@hotel.local'} / ${process.env.ADMIN_PASSWORD ? '(from ADMIN_PASSWORD)' : pw} — change this password after signing in.`);
 }
 
-module.exports = { app, parseIcal, today };
-if (require.main === module) {
-  const port = process.env.PORT || 3000;
-  app.listen(port, () => console.log(`Hotel Stock running on http://localhost:${port}`));
-}
+// Always listen: Hostinger's Node.js host loads the entry file itself, so a
+// `require.main === module` guard would stop the server from ever starting.
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Hotel Stock running on port ${port}`));
