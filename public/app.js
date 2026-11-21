@@ -1,0 +1,526 @@
+'use strict';
+// ====== tiny helpers ======
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = n => '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+const qtyf = n => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const todayStr = () => ymd(new Date());
+const dt = s => s ? new Date(s.includes('T') || s.length > 10 ? s.replace(' ', 'T') + (s.includes('Z') || s.length <= 10 ? '' : 'Z') : s + 'T00:00:00').toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: s.length > 10 ? '2-digit' : undefined, minute: s.length > 10 ? '2-digit' : undefined }) : '';
+let me = null, cache = {};
+
+function toast(msg, isErr) { const t = $('#toast'); t.textContent = msg; t.className = 'show' + (isErr ? ' err' : ''); clearTimeout(toast.t); toast.t = setTimeout(() => t.className = '', 3200); }
+async function api(method, url, body, isForm) {
+  const opt = { method, credentials: 'same-origin', headers: {} };
+  if (body !== undefined) { if (isForm) opt.body = body; else { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); } }
+  const r = await fetch(url, opt);
+  if (r.status === 401 && url !== '/api/login') { me = null; renderLogin(); throw new Error('Please sign in'); }
+  const ct = r.headers.get('content-type') || '';
+  const data = ct.includes('json') ? await r.json() : await r.text();
+  if (!r.ok) throw new Error(data.error || 'Something went wrong');
+  return data;
+}
+const get = u => api('GET', u), post = (u, b) => api('POST', u, b || {}), put = (u, b) => api('PUT', u, b);
+const can = (...roles) => me && (me.role === 'admin' || roles.includes(me.role));
+async function guard(fn) { try { return await fn(); } catch (e) { if (e.message !== 'Please sign in') toast(e.message, true); } }
+
+// ====== forms & modals ======
+function field(f) {
+  const v = f.value ?? '';
+  let inp;
+  if (f.type === 'select') inp = `<select name="${f.n}" ${f.req ? 'required' : ''}>${f.blank ? '<option value="">' + esc(f.blank) + '</option>' : ''}${f.opts.map(o => { const [val, lab] = Array.isArray(o) ? o : [o, o]; return `<option value="${esc(val)}" ${String(val) === String(v) ? 'selected' : ''}>${esc(lab)}</option>`; }).join('')}</select>`;
+  else if (f.type === 'textarea') inp = `<textarea name="${f.n}" rows="2">${esc(v)}</textarea>`;
+  else inp = `<input name="${f.n}" type="${f.type || 'text'}" value="${esc(v)}" ${f.req ? 'required' : ''} ${f.step ? `step="${f.step}"` : ''} ${f.min != null ? `min="${f.min}"` : ''} ${f.ph ? `placeholder="${esc(f.ph)}"` : ''} ${f.type === 'number' ? 'inputmode="decimal"' : ''} ${f.auto ? 'autofocus' : ''}>`;
+  return `<div><label>${esc(f.label)}</label>${inp}</div>`;
+}
+const fields = fs => fs.map(field).join('');
+function readForm(form) { const o = {}; new FormData(form).forEach((v, k) => { if (!(v instanceof File)) o[k] = v; }); return o; }
+function modal(title, html, { onSubmit, submitLabel = 'Save', wide = false, hideSubmit = false } = {}) {
+  closeModal();
+  const root = $('#modal-root');
+  root.innerHTML = `<div class="modal-bg"><div class="modal ${wide ? 'wide' : ''}"><div class="row sb"><h2>${esc(title)}</h2><button class="btn sec sm" data-close>✕</button></div>
+    <form id="mform">${html}<div class="err" id="merr"></div>${hideSubmit ? '' : `<div class="row" style="margin-top:14px"><button class="btn" type="submit">${esc(submitLabel)}</button><button class="btn sec" type="button" data-close>Cancel</button></div>`}</form></div></div>`;
+  root.querySelector('.modal-bg').addEventListener('mousedown', e => { if (e.target.classList.contains('modal-bg')) closeModal(); });
+  root.querySelectorAll('[data-close]').forEach(b => b.onclick = closeModal);
+  const form = $('#mform');
+  form.onsubmit = async e => {
+    e.preventDefault(); if (!onSubmit) return;
+    const btn = form.querySelector('button[type=submit]'); if (btn) btn.disabled = true;
+    try { await onSubmit(form, readForm(form)); } catch (er) { $('#merr').textContent = er.message; if (btn) btn.disabled = false; }
+  };
+  const first = form.querySelector('input:not([type=hidden]):not([type=file]),select'); if (first && !('ontouchstart' in window)) first.focus();
+  return form;
+}
+function closeModal() { $('#modal-root').innerHTML = ''; }
+function lightbox(src) { modal('Photo', `<img src="${esc(src)}" style="width:100%;border-radius:10px">`, { hideSubmit: true, wide: true }); }
+
+// ====== image shrink for phone photos ======
+async function shrink(file) {
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type) || file.size < 300 * 1024) return file;
+  try {
+    const bmp = await createImageBitmap(file); const s = Math.min(1, 1800 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas'); c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.82));
+    return blob && blob.size < file.size ? new File([blob], 'photo.jpg', { type: 'image/jpeg' }) : file;
+  } catch { return file; }
+}
+
+// ====== shell / routing ======
+const NAV = [
+  ['home', '🏠', 'Home'], ['scan', '📷', 'Scan'], ['rooms', '🛏️', 'Rooms'], ['stock', '📦', 'Stock'], ['assets', '🏷️', 'Assets'],
+  ['expenses', '🧾', 'Expenses'], ['more', '☰', 'More']
+];
+const SIDE_EXTRA = [['audit', 'Room audit'], ['restock', 'Restock list'], ['po', 'Purchasing'], ['labels', 'Print labels'], ['reports', 'Reports'], ['admin', 'Settings']];
+function renderShell() {
+  $('#app').innerHTML = `<div class="shell"><nav class="side"><div class="logo">🏨 Hotel Stock</div>
+    ${NAV.filter(n => n[0] !== 'more').map(n => `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]} ${n[2]}</a>`).join('')}
+    <div class="small mute" style="padding:12px 12px 4px">TOOLS</div>
+    ${SIDE_EXTRA.filter(n => n[0] !== 'admin' || can()).map(n => `<a href="#/${n[0]}" data-nav="${n[0]}">${n[1]}</a>`).join('')}
+    <div class="sp"></div><div class="who">${esc(me.name)} · ${esc(me.role)}</div><a href="#" id="logout">Sign out</a></nav>
+    <main class="main" id="view"></main></div>
+    <nav class="bottom">${NAV.map(n => `<a href="#/${n[0]}" data-nav="${n[0]}"><b>${n[1]}</b>${n[2]}</a>`).join('')}</nav>`;
+  $('#logout').onclick = async e => { e.preventDefault(); await post('/api/logout'); me = null; renderLogin(); };
+}
+function renderLogin(err) {
+  $('#app').innerHTML = `<div class="login"><h1 style="text-align:center;margin-bottom:4px">🏨 Hotel Stock</h1><p class="mute" style="text-align:center;margin-top:0">Sign in to continue</p>
+  <form class="card" id="lf"><label>Email</label><input name="email" type="email" autocomplete="username" required autofocus><label>Password</label><input name="password" type="password" autocomplete="current-password" required>
+  <div class="err">${esc(err || '')}</div><button class="btn big" style="width:100%;margin-top:14px">Sign in</button></form></div>`;
+  $('#lf').onsubmit = async e => { e.preventDefault(); try { me = await post('/api/login', readForm(e.target)); renderShell(); route(); } catch (er) { renderLogin(er.message); } };
+}
+const routes = {};
+async function route() {
+  if (!me) return;
+  stopScanner();
+  const [name, ...args] = (location.hash.replace(/^#\/?/, '').split('?')[0] || 'home').split('/');
+  document.querySelectorAll('[data-nav]').forEach(a => a.classList.toggle('on', a.dataset.nav === name || (name === 'room' && a.dataset.nav === 'rooms') || (name === 'item' && a.dataset.nav === 'stock') || (name === 'asset' && a.dataset.nav === 'assets') || (['audit', 'restock', 'po', 'labels', 'reports', 'admin'].includes(name) && a.dataset.nav === 'more' && false)));
+  const v = $('#view'); if (!v) return;
+  const fn = routes[name] || routes.home;
+  v.innerHTML = '<div class="empty">Loading…</div>';
+  await guard(() => fn(v, ...args));
+  window.scrollTo(0, 0);
+}
+window.addEventListener('hashchange', route);
+const go = h => { location.hash = h; };
+const head = (title, actions = '') => `<div class="top"><h1>${title}</h1>${actions}</div>`;
+const statusTag = s => `<span class="tag ${{ clean: 'green', inspected: 'green', dirty: 'amber', maintenance: 'red' }[s] || ''}">${esc(s)}</span>`;
+const condTag = c => `<span class="tag ${{ good: 'green', needs_repair: 'amber', under_repair: 'amber', missing: 'red', retired: '' }[c] || ''}">${esc(String(c).replace('_', ' '))}</span>`;
+async function locOptions(types) { const l = await get('/api/locations'); return l.filter(x => !types || types.includes(x.type)).map(x => [x.id, `${x.name}${x.type !== 'room' ? ' (' + x.type + ')' : ''}`]); }
+
+// ====== HOME ======
+routes.home = async v => {
+  const d = await get('/api/dashboard');
+  const S = (n, l, href, cls = '') => `<a class="stat ${cls}" href="${href}"><div class="n">${n}</div><div class="l">${l}</div></a>`;
+  v.innerHTML = head('Today', `<span class="mute small">${esc(new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' }))}</span>`) +
+    `<div class="grid g2">
+    ${S(`${d.occupied}/${d.rooms}`, 'Rooms occupied', '#/rooms')}${S(d.arrivals, 'Arrivals today', '#/rooms')}${S(d.departures, 'Departures today', '#/rooms')}
+    ${S(d.dirty, 'Rooms to clean', '#/rooms', d.dirty ? 'warn' : '')}
+    ${S(d.restock_lines, 'Restock lines needed', '#/restock', d.restock_lines ? 'warn' : '')}${S(d.low_stock, 'Low stock items', '#/reports/low', d.low_stock ? 'bad' : '')}
+    ${S(d.missing_assets, 'Missing assets', '#/assets?c=missing', d.missing_assets ? 'bad' : '')}${S(d.assets_in_repair, 'Assets needing repair', '#/assets?c=needs_repair', d.assets_in_repair ? 'warn' : '')}
+    ${can('manager', 'accounts') ? S(money(d.month_spend), 'Spend this month', '#/expenses') : ''}
+    ${can('manager', 'accounts') ? S(d.pending_expenses.n, `Expenses awaiting approval (${money(d.pending_expenses.t)})`, '#/expenses?s=pending', d.pending_expenses.n ? 'warn' : '') : ''}
+    ${d.warranties_expiring ? S(d.warranties_expiring, 'Warranties expiring in 30 days', '#/assets') : ''}</div>
+    <div class="row" style="margin-top:14px"><a class="btn big" href="#/scan">📷 Scan a code</a><a class="btn sec big" href="#/audit">Room audit</a><a class="btn sec big" href="#/expenses/new">+ Expense</a></div>
+    <p class="mute small" style="margin-top:14px">${d.last_sync ? 'Airbnb calendars last synced ' + esc(dt(d.last_sync.replace('T', ' ').slice(0, 19))) : 'Airbnb calendars not synced yet — add calendar links in Settings → Rooms.'}</p>`;
+};
+
+// ====== SCAN ======
+let scanner = null, lastCode = '', lastAt = 0;
+function stopScanner() { if (scanner) { const s = scanner; scanner = null; s.stop().then(() => s.clear()).catch(() => { }); } }
+async function startScanner(elId, onCode) {
+  if (!window.Html5Qrcode) return toast('Scanner library missing', true);
+  if (!window.isSecureContext) { $('#' + elId).innerHTML = '<div class="empty">Camera needs a secure (https) connection. Use the box below with a handheld scanner, or type the code.</div>'; return; }
+  stopScanner();
+  const s = new Html5Qrcode(elId, { formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE, Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.CODE_39], verbose: false, useBarCodeDetectorIfSupported: true });
+  scanner = s;
+  try {
+    await s.start({ facingMode: 'environment' }, { fps: 12, qrbox: { width: 300, height: 130 }, aspectRatio: 1.5 }, code => {
+      const now = Date.now(); if (code === lastCode && now - lastAt < 2000) return; lastCode = code; lastAt = now;
+      if (navigator.vibrate) navigator.vibrate(60); onCode(code);
+    }, () => { });
+  } catch (e) { scanner = null; $('#' + elId).innerHTML = `<div class="empty">Could not open the camera (${esc(e.message || e)}). Allow camera access in the browser, or type the code below.</div>`; }
+}
+async function resolveCode(code) {
+  try { const r = await get('/api/resolve?code=' + encodeURIComponent(code)); go(`#/${r.type === 'location' ? 'room' : r.type}/${r.id}`); }
+  catch (e) { toast(e.message, true); }
+}
+routes.scan = async v => {
+  v.innerHTML = head('Scan') + `<div class="card"><div id="reader"></div>
+  <form id="manual" class="row" style="margin-top:12px"><input id="code" placeholder="Type or scan a code (A00012, R-101, barcode…)" autocomplete="off" style="flex:1" autofocus><button class="btn">Go</button></form>
+  <p class="mute small">A handheld/Bluetooth scanner works here too — click the box and scan. Room labels open the room, asset labels open the asset, item barcodes open the stock item.</p></div>`;
+  $('#manual').onsubmit = e => { e.preventDefault(); const c = $('#code').value.trim(); if (c) resolveCode(c); };
+  startScanner('reader', resolveCode);
+};
+
+// ====== ROOMS ======
+routes.rooms = async v => {
+  const locs = await get('/api/locations');
+  const rooms = locs.filter(l => l.type === 'room'), others = locs.filter(l => l.type !== 'room');
+  const card = l => `<a class="room ${esc(l.status)}" href="#/room/${l.id}"><div class="row sb"><span class="nm">${esc(l.name)}</span>${statusTag(l.status)}</div>
+    <div class="small mute">${esc(l.room_type || '')} ${l.floor ? '· Floor ' + esc(l.floor) : ''}</div>
+    <div class="small" style="margin-top:4px">${l.occupied ? '🟢 ' + esc(l.guest || 'Occupied') : '<span class="mute">Vacant</span>'}</div></a>`;
+  v.innerHTML = head('Rooms', can('manager') ? '<a class="btn sec sm" href="#/admin/locations">+ Add / edit</a>' : '') +
+    (rooms.length ? `<div class="grid g3">${rooms.map(card).join('')}</div>` : '<div class="card empty">No rooms yet. Add them in Settings → Rooms.</div>') +
+    `<h3>Stores & other places</h3><div class="grid g3">${others.map(l => `<a class="room" href="#/room/${l.id}"><span class="nm">${esc(l.name)}</span><div class="small mute">${esc(l.type)}</div></a>`).join('') || '<span class="mute">None</span>'}</div>`;
+};
+routes.room = async (v, id, tab = 'contents') => {
+  const l = await get('/api/locations/' + id);
+  const tabs = ['contents', 'bookings'].map(t => `<a class="${tab === t ? 'on' : ''}" href="#/room/${id}/${t}">${t[0].toUpperCase() + t.slice(1)}</a>`).join('');
+  let body = '';
+  if (tab === 'contents') {
+    const exp = {}; l.template.filter(t => t.kind === 'asset').forEach(t => exp[t.item_id] = t);
+    body = `<div class="card"><h2>Fixed assets (${l.assets.length})</h2>${l.assets.length ? `<div class="scroll"><table><tr><th>Tag</th><th>Item</th><th>Condition</th></tr>${l.assets.map(a => `<tr class="click" onclick="go('#/asset/${a.id}')"><td class="code">${esc(a.tag)}</td><td>${esc(a.name)}</td><td>${condTag(a.condition)}</td></tr>`).join('')}</table></div>` : '<p class="mute">No tagged assets here.</p>'}</div>
+    <div class="card"><div class="row sb"><h2>Supplies in this place</h2>${l.type === 'room' ? `<a class="btn sec sm" href="#/restock?loc=${id}">Restock list</a>` : ''}</div>
+    ${l.stock.length ? `<div class="scroll"><table><tr><th>Item</th><th class="r">Qty</th><th class="r">Par</th><th></th></tr>${l.stock.map(s => `<tr><td><a href="#/item/${s.item_id}">${esc(s.name)}</a></td><td class="r ${s.par > s.qty ? 'bold' : ''}" style="${s.par > s.qty ? 'color:var(--amber)' : ''}">${qtyf(s.qty)} ${esc(s.unit)}</td><td class="r mute">${s.par ? qtyf(s.par) : '—'}</td>
+      <td class="r"><button class="btn sec sm" onclick="useStock(${s.item_id},${id})">Used</button></td></tr>`).join('')}</table></div>` : '<p class="mute">Nothing counted here yet.</p>'}</div>`;
+  } else {
+    body = `<div class="card">${l.bookings.length ? `<table><tr><th>Guest</th><th>In</th><th>Out</th><th>Source</th></tr>${l.bookings.map(b => `<tr><td>${esc(b.guest || '—')}</td><td>${dt(b.checkin)}</td><td>${dt(b.checkout)}</td><td><span class="tag ${b.source === 'airbnb' ? 'red' : 'blue'}">${esc(b.source)}</span> ${b.status === 'blocked' ? '<span class="tag">blocked</span>' : ''}</td></tr>`).join('')}</table>` : '<p class="mute">No upcoming bookings.</p>'}
+    ${can('manager') ? `<button class="btn sec sm" onclick="addBooking(${id})" style="margin-top:8px">+ Manual booking</button>` : ''}</div>`;
+  }
+  v.innerHTML = head(`${esc(l.name)} ${l.type === 'room' ? statusTag(l.status) : ''}`, `<a class="btn sec sm" href="#/audit/${id}">Audit</a>${can('manager') ? `<a class="btn sec sm" href="#/labels?loc=${id}">Barcode</a>` : ''}`) +
+    `<p class="mute small">${esc(l.room_type || '')} ${l.floor ? '· Floor ' + esc(l.floor) : ''} · code <span class="code">${esc(l.code)}</span></p>` +
+    (l.type === 'room' ? `<div class="row" style="margin-bottom:12px">${['dirty', 'clean', 'inspected', 'maintenance'].map(s => `<button class="btn ${l.status === s ? '' : 'sec'} sm" onclick="setRoomStatus(${id},'${s}')">${s}</button>`).join('')}</div>` : '') +
+    `<div class="tabs">${tabs}</div>` + body;
+};
+window.go = go;
+window.setRoomStatus = (id, s) => guard(async () => { await post(`/api/locations/${id}/status`, { status: s }); toast('Updated'); route(); });
+window.useStock = (item_id, loc) => modal('Record usage', fields([{ n: 'qty', label: 'How many used / restocked out?', type: 'number', step: 'any', req: true, auto: true, value: 1 }, { n: 'note', label: 'Note (optional)' }]), {
+  submitLabel: 'Record', onSubmit: async (f, d) => { await post('/api/stock/consume', { item_id, location_id: loc, qty: d.qty, note: d.note }); closeModal(); toast('Recorded'); route(); }
+});
+window.addBooking = loc => modal('Manual booking', fields([{ n: 'guest', label: 'Guest name' }, { n: 'checkin', label: 'Check-in', type: 'date', req: true, value: todayStr() }, { n: 'checkout', label: 'Check-out', type: 'date', req: true }]), {
+  onSubmit: async (f, d) => { await post('/api/bookings', { ...d, location_id: loc }); closeModal(); route(); }
+});
+
+// ====== STOCK (consumables) ======
+routes.stock = async v => {
+  const items = await get('/api/items?kind=consumable');
+  const cats = [...new Set(items.map(i => i.category || 'Other'))];
+  v.innerHTML = head('Stock', can('manager') ? '<button class="btn sm" id="newitem">+ New item</button>' : '') +
+    `<input id="q" placeholder="Search name, SKU or barcode…" style="margin-bottom:10px"><div id="list"></div>`;
+  const draw = () => {
+    const q = $('#q').value.toLowerCase();
+    const rows = items.filter(i => !q || [i.name, i.sku, i.barcode].some(x => (x || '').toLowerCase().includes(q)));
+    $('#list').innerHTML = cats.map(c => { const r = rows.filter(i => (i.category || 'Other') === c); return r.length ? `<h3>${esc(c)}</h3><div class="card scroll"><table>${r.map(i => `<tr class="click" onclick="go('#/item/${i.id}')"><td><span class="bold">${esc(i.name)}</span><div class="small mute">${esc(i.sku || '')} · ${esc(i.barcode || '')}</div></td><td class="r bold">${qtyf(i.total_qty)} <span class="mute small">${esc(i.unit)}</span></td></tr>`).join('')}</table></div>` : ''; }).join('') || '<div class="empty">No items found.</div>';
+  };
+  $('#q').oninput = draw; draw();
+  if ($('#newitem')) $('#newitem').onclick = () => itemForm();
+};
+async function itemForm(it) {
+  const sups = await get('/api/suppliers');
+  modal(it ? 'Edit item' : 'New item', fields([
+    { n: 'name', label: 'Name', req: true, value: it?.name }, { n: 'category', label: 'Category (e.g. Linen, Minibar, Amenities)', value: it?.category },
+    ...(it ? [] : [{ n: 'kind', label: 'Type', type: 'select', opts: [['consumable', 'Counted by quantity (soap, water, towels)'], ['asset', 'Individually tagged asset (TV, kettle, safe)']] }]),
+    { n: 'unit', label: 'Unit', value: it?.unit || 'pcs' }, { n: 'sku', label: 'SKU (optional)', value: it?.sku }, { n: 'barcode', label: 'Barcode (leave blank to auto-generate; scan the product’s own barcode if it has one)', value: it?.barcode },
+    { n: 'cost', label: 'Unit cost (₹)', type: 'number', step: 'any', value: it?.cost }, { n: 'reorder_level', label: 'Reorder when store stock falls to', type: 'number', step: 'any', value: it?.reorder_level },
+    { n: 'supplier_id', label: 'Supplier', type: 'select', blank: '— none —', opts: sups.map(s => [s.id, s.name]), value: it?.supplier_id }
+  ]), { onSubmit: async (f, d) => { it ? await put('/api/items/' + it.id, d) : await post('/api/items', d); closeModal(); toast('Saved'); route(); } });
+}
+routes.item = async (v, id) => {
+  const i = await get('/api/items/' + id);
+  const isC = i.kind === 'consumable';
+  v.innerHTML = head(esc(i.name), can('manager') ? '<button class="btn sec sm" id="edit">Edit</button>' : '') +
+    `<p class="mute small">${esc(i.category || '')} · barcode <span class="code">${esc(i.barcode || '')}</span> · ${money(i.cost)} each</p>` +
+    (isC ? `<div class="row" style="margin-bottom:12px">${can('manager', 'housekeeping') ? '<button class="btn sm" id="rcv">+ Receive</button><button class="btn sec sm" id="iss">Write off / issue</button>' : ''}<button class="btn sec sm" id="trf">Transfer</button>${can('manager') ? '<button class="btn sec sm" id="adj">Correct count</button>' : ''}<a class="btn sec sm" href="#/labels?item=${id}">Barcode label</a></div>
+    <div class="card"><h2>Where it is</h2>${i.stock.length ? `<div class="scroll"><table><tr><th>Location</th><th class="r">Qty</th><th class="r">Par</th>${can('manager') ? '<th></th>' : ''}</tr>${i.stock.map(s => `<tr><td>${esc(s.location)}</td><td class="r bold">${qtyf(s.qty)}</td><td class="r">${s.par ? qtyf(s.par) : '—'}</td>${can('manager') ? `<td class="r"><button class="btn sec sm" onclick="setPar(${id},${s.location_id},${s.par})">Par</button></td>` : ''}</tr>`).join('')}</table></div>` : '<p class="mute">No stock yet — receive some.</p>'}</div>`
+    : `<div class="card"><h2>Tagged units (${i.assets.length})</h2>${can('manager') ? `<button class="btn sm" onclick="assetForm(${id})">+ Add units</button>` : ''}<table>${i.assets.map(a => `<tr class="click" onclick="go('#/asset/${a.id}')"><td class="code">${esc(a.tag)}</td><td>${esc(a.location || '—')}</td><td>${condTag(a.condition)}</td></tr>`).join('')}</table></div>`) +
+    `<div class="card"><h2>Recent activity</h2>${movTable(i.history)}</div>`;
+  if ($('#edit')) $('#edit').onclick = () => itemForm(i);
+  const pick = async (title, extra, fn) => { const locs = await locOptions(); modal(title, fields([{ n: 'location_id', label: 'Location', type: 'select', opts: locs, value: locs.find(l => l[1].startsWith('Main'))?.[0] }, ...extra]), { onSubmit: async (f, d) => { await fn(d); closeModal(); toast('Done'); route(); } }); };
+  if ($('#rcv')) $('#rcv').onclick = () => pick('Receive stock', [{ n: 'qty', label: 'Quantity received', type: 'number', step: 'any', req: true }, { n: 'note', label: 'Note / invoice no.' }], d => post('/api/stock/receive', { ...d, item_id: id }));
+  if ($('#iss')) $('#iss').onclick = () => pick('Write off / issue', [{ n: 'qty', label: 'Quantity', type: 'number', step: 'any', req: true }, { n: 'note', label: 'Reason', req: true }], d => post('/api/stock/issue', { ...d, item_id: id }));
+  if ($('#adj')) $('#adj').onclick = () => pick('Correct count', [{ n: 'new_qty', label: 'Counted quantity', type: 'number', step: 'any', req: true }, { n: 'note', label: 'Reason', req: true }], d => post('/api/stock/adjust', { ...d, item_id: id }));
+  if ($('#trf')) $('#trf').onclick = async () => { const locs = await locOptions(); modal('Transfer', fields([{ n: 'from_loc', label: 'From', type: 'select', opts: locs }, { n: 'to_loc', label: 'To', type: 'select', opts: locs }, { n: 'qty', label: 'Quantity', type: 'number', step: 'any', req: true }]), { onSubmit: async (f, d) => { await post('/api/stock/transfer', { ...d, item_id: id, from_loc: +d.from_loc, to_loc: +d.to_loc }); closeModal(); route(); } }); };
+};
+window.setPar = (item_id, location_id, par) => modal('Par level', fields([{ n: 'par', label: 'Keep this many here', type: 'number', step: 'any', value: par, req: true, min: 0 }]), { onSubmit: async (f, d) => { await put('/api/stock/par', { item_id, location_id, par: d.par }); closeModal(); route(); } });
+function movTable(rows) {
+  if (!rows.length) return '<p class="mute">Nothing yet.</p>';
+  return `<div class="scroll"><table><tr><th>When</th><th>What</th><th>By</th></tr>${rows.map(m => `<tr><td class="small">${esc(dt(m.ts))}</td><td class="small"><span class="tag">${esc(m.type.replace('_', ' '))}</span> ${m.item ? esc(m.item) + ' ' : ''}${m.tag ? '<span class="code">' + esc(m.tag) + '</span> ' : ''}${m.qty != null ? qtyf(m.qty) + ' ' : ''}${m.from_name ? esc(m.from_name) + ' ' : ''}${m.from_name || m.to_name ? '→ ' : ''}${esc(m.to_name || '')}${m.note ? '<div class="mute">' + esc(m.note) + '</div>' : ''}</td><td class="small mute">${esc(m.user || '')}</td></tr>`).join('')}</table></div>`;
+}
+
+// ====== ASSETS ======
+routes.assets = async v => {
+  const q0 = new URLSearchParams((location.hash.split('?')[1]) || '');
+  const items = (await get('/api/items?kind=asset'));
+  v.innerHTML = head('Assets', can('manager') ? '<button class="btn sm" id="newasset">+ Register assets</button><button class="btn sec sm" id="newkind">+ New asset type</button>' : '') +
+    `<div class="row" style="margin-bottom:10px"><input id="q" placeholder="Search tag, name, serial…" style="flex:2;min-width:150px"><select id="cond" style="flex:1;min-width:120px"><option value="">Any condition</option>${['good', 'needs_repair', 'under_repair', 'missing', 'retired'].map(c => `<option ${q0.get('c') === c ? 'selected' : ''} value="${c}">${c.replace('_', ' ')}</option>`).join('')}</select></div><div id="list" class="card scroll"></div>`;
+  const draw = async () => {
+    const rows = await get(`/api/assets?q=${encodeURIComponent($('#q').value)}&condition=${$('#cond').value}`);
+    $('#list').innerHTML = rows.length ? `<table><tr><th>Tag</th><th>Item</th><th>Location</th><th>Condition</th></tr>${rows.map(a => `<tr class="click" onclick="go('#/asset/${a.id}')"><td class="code">${esc(a.tag)}</td><td>${esc(a.name)}</td><td>${esc(a.location || '—')}</td><td>${condTag(a.condition)}</td></tr>`).join('')}</table>` : '<div class="empty">No assets found.</div>';
+  };
+  let tm; $('#q').oninput = () => { clearTimeout(tm); tm = setTimeout(() => guard(draw), 250); }; $('#cond').onchange = () => guard(draw); await draw();
+  if ($('#newasset')) $('#newasset').onclick = () => items.length ? assetForm() : toast('Create an asset type first (e.g. “Television 43in”)', true);
+  if ($('#newkind')) $('#newkind').onclick = () => itemForm();
+};
+window.assetForm = async item_id => {
+  const items = await get('/api/items?kind=asset'); const locs = await locOptions();
+  modal('Register assets', fields([{ n: 'item_id', label: 'Asset type', type: 'select', opts: items.map(i => [i.id, i.name]), value: item_id }, { n: 'location_id', label: 'Where is it', type: 'select', opts: locs },
+    { n: 'count', label: 'How many identical units (each gets its own tag)', type: 'number', value: 1, min: 1 }, { n: 'serial', label: 'Serial number (single unit only)' },
+    { n: 'purchase_date', label: 'Purchase date', type: 'date' }, { n: 'warranty_until', label: 'Warranty until', type: 'date' }, { n: 'cost', label: 'Cost per unit (₹, blank = item cost)', type: 'number', step: 'any' }]),
+    { onSubmit: async (f, d) => { const r = await post('/api/assets', { ...d, cost: d.cost === '' ? undefined : +d.cost, count: +d.count }); closeModal(); toast(`${r.ids.length} asset(s) registered. Print their labels next.`); go('#/labels?assets=' + r.ids.join(',')); } });
+};
+routes.asset = async (v, id) => {
+  const a = await get('/api/assets/' + id);
+  v.innerHTML = head(`${esc(a.name)} <span class="code">${esc(a.tag)}</span>`, `<a class="btn sec sm" href="#/labels?assets=${id}">Label</a>`) +
+    `<div class="card"><div class="row sb"><div><div class="mute small">Location</div><div class="bold">${esc(a.location || '—')}</div></div><div>${condTag(a.condition)}</div></div>
+    <div class="f2" style="margin-top:10px"><div><div class="mute small">Serial</div>${esc(a.serial || '—')}</div><div><div class="mute small">Cost</div>${money(a.cost)}</div>
+    <div><div class="mute small">Purchased</div>${esc(a.purchase_date || '—')}</div><div><div class="mute small">Warranty until</div>${esc(a.warranty_until || '—')}</div></div>
+    <div class="row" style="margin-top:14px"><button class="btn" id="mv">Move</button><button class="btn sec" id="cd">Change condition</button></div></div>
+    <div class="card"><h2>History</h2>${movTable(a.history.map(h => ({ ...h, item: null })))}</div>`;
+  $('#mv').onclick = async () => { const locs = await locOptions(); modal('Move asset', fields([{ n: 'to_loc', label: 'Move to', type: 'select', opts: locs, value: a.location_id }, { n: 'note', label: 'Note' }]), { onSubmit: async (f, d) => { await post(`/api/assets/${id}/move`, { to_loc: +d.to_loc, note: d.note }); closeModal(); route(); } }); };
+  $('#cd').onclick = () => modal('Condition', fields([{ n: 'condition', label: 'Condition', type: 'select', opts: ['good', 'needs_repair', 'under_repair', 'missing', ...(can('manager') ? ['retired'] : [])].map(c => [c, c.replace('_', ' ')]), value: a.condition }, { n: 'note', label: 'What happened?' }]), { onSubmit: async (f, d) => { await post(`/api/assets/${id}/condition`, d); closeModal(); route(); } });
+};
+
+// ====== ROOM AUDIT ======
+let audit = null;
+routes.audit = async (v, locId) => {
+  if (!locId) {
+    const rooms = (await get('/api/locations')).filter(l => l.type === 'room');
+    v.innerHTML = head('Room audit') + `<p class="mute">Pick a room, then scan every tagged item you can see. The app lists what is missing, extra or damaged and lets you correct the records.</p><div class="grid g2">${rooms.map(r => `<a class="room ${esc(r.status)}" href="#/audit/${r.id}"><span class="nm">${esc(r.name)}</span></a>`).join('')}</div>`;
+    return;
+  }
+  const l = await get('/api/locations/' + locId);
+  if (!audit || audit.loc !== +locId) audit = { loc: +locId, tags: [], counts: {} };
+  const countable = l.stock.filter(s => s.par > 0 || s.qty > 0);
+  v.innerHTML = head('Audit · ' + esc(l.name)) +
+    `<div class="card"><div id="reader"></div><form id="manual" class="row" style="margin-top:10px"><input id="code" placeholder="Type or scan an asset tag" autocomplete="off" style="flex:1"><button class="btn">Add</button></form></div>
+    <div class="card"><h2>Scanned <span id="cnt" class="tag blue"></span></h2><div id="chips"></div></div>
+    ${countable.length ? `<div class="card"><h2>Supplies count (optional)</h2><p class="mute small">Enter what you actually count. Leave blank to skip.</p>${countable.map(s => `<div class="row sb" style="margin:6px 0"><span>${esc(s.name)} <span class="mute small">(system: ${qtyf(s.qty)})</span></span><input data-c="${s.item_id}" type="number" step="any" inputmode="decimal" style="width:90px" value="${audit.counts[s.item_id] ?? ''}"></div>`).join('')}</div>` : ''}
+    <button class="btn big" id="review" style="width:100%">Review results</button>`;
+  const draw = () => { $('#cnt').textContent = audit.tags.length; $('#chips').innerHTML = audit.tags.map(t => `<span class="chip">${esc(t)}<button onclick="auditRm('${esc(t)}')">×</button></span>`).join('') || '<span class="mute small">Nothing scanned yet.</span>'; };
+  const add = c => { c = c.trim(); if (!c) return; if (audit.tags.includes(c)) return toast('Already scanned'); audit.tags.push(c); toast('Added ' + c); draw(); };
+  window.auditRm = t => { audit.tags = audit.tags.filter(x => x !== t); draw(); };
+  $('#manual').onsubmit = e => { e.preventDefault(); add($('#code').value); $('#code').value = ''; };
+  draw(); startScanner('reader', add);
+  $('#review').onclick = () => guard(async () => {
+    document.querySelectorAll('[data-c]').forEach(i => { if (i.value !== '') audit.counts[i.dataset.c] = +i.value; else delete audit.counts[i.dataset.c]; });
+    stopScanner();
+    const r = await post('/api/audit', { location_id: +locId, tags: audit.tags, counts: audit.counts, apply: false });
+    const sec = (t, arr, fn, cls) => arr.length ? `<h3>${t} <span class="tag ${cls}">${arr.length}</span></h3>${arr.map(fn).join('')}` : '';
+    const ok = !r.missing.length && !r.extra.length && !r.damaged.length && !r.shortfalls.length && !r.variances.length && !r.unknown_tags.length;
+    modal('Audit result · ' + l.name, `<p>${r.scanned} item(s) scanned.</p>${ok ? '<div class="card" style="background:var(--green-l)">✅ Everything matches.</div>' : ''}
+      ${sec('Missing from room', r.missing, a => `<div>${esc(a.name)} <span class="code">${esc(a.tag)}</span></div>`, 'red')}
+      ${sec('Found here but recorded elsewhere', r.extra, a => `<div>${esc(a.name)} <span class="code">${esc(a.tag)}</span> <span class="mute small">was in ${esc(a.was_in)}</span></div>`, 'amber')}
+      ${sec('Needs repair', r.damaged, a => `<div>${esc(a.name)} <span class="code">${esc(a.tag)}</span></div>`, 'amber')}
+      ${sec('Room standard not met', r.shortfalls, s => `<div>${esc(s.name)}: expected ${s.expected}, found ${s.found}</div>`, 'red')}
+      ${sec('Count differences', r.variances, s => `<div>${esc(s.name)}: system ${qtyf(s.system)}, counted ${qtyf(s.counted)}</div>`, 'amber')}
+      ${sec('Unknown tags', r.unknown_tags, t => `<div class="code">${esc(t)}</div>`, 'red')}
+      <p class="mute small">Saving marks missing items as “missing”, moves found items into this room and corrects supply counts.</p>`,
+      { submitLabel: 'Save audit', wide: true, onSubmit: async () => { await post('/api/audit', { location_id: +locId, tags: audit.tags, counts: audit.counts, apply: true }); audit = null; closeModal(); toast('Audit saved'); go('#/room/' + locId); } });
+  });
+};
+
+// ====== RESTOCK ======
+routes.restock = async v => {
+  const loc = new URLSearchParams(location.hash.split('?')[1] || '').get('loc');
+  const { needs } = await get('/api/restock' + (loc ? '?location_id=' + loc : ''));
+  const by = {}; needs.forEach(n => (by[n.room] ||= []).push(n));
+  v.innerHTML = head('Restock list', can('manager', 'housekeeping') && needs.length ? '<button class="btn sm" id="fill">Fulfil from main store</button>' : '') +
+    `<p class="mute small">What each room is short of compared with its par level. “Fulfil” moves the stock out of the main store into the rooms.</p>` +
+    (Object.keys(by).length ? Object.entries(by).map(([r, rows]) => `<div class="card"><h2>${esc(r)}</h2>${rows.map(n => `<div class="row sb"><span>${esc(n.item)}</span><span class="bold">+${qtyf(n.need)} ${esc(n.unit)}</span></div>`).join('')}</div>`).join('') : '<div class="card empty">All rooms are at par 🎉</div>');
+  if ($('#fill')) $('#fill').onclick = () => guard(async () => { const r = await post('/api/restock/fulfil', { location_id: loc || undefined }); toast(r.short.length ? `Done — ${r.short.length} line(s) short in store` : 'Rooms restocked'); route(); });
+};
+
+// ====== PURCHASING ======
+routes.po = async v => {
+  const pos = await get('/api/pos');
+  v.innerHTML = head('Purchasing', can('manager', 'accounts') ? '<button class="btn sm" id="newpo">+ Purchase order</button><button class="btn sec sm" id="newsup">+ Supplier</button>' : '') +
+    (pos.length ? pos.map(p => `<div class="card"><div class="row sb"><span class="bold">PO #${p.id} · ${esc(p.supplier || 'No supplier')}</span><span class="tag ${p.status === 'received' ? 'green' : p.status === 'open' ? 'blue' : ''}">${esc(p.status)}</span></div>
+      <div class="small mute">${esc(dt(p.created_at))} · ${money(p.total)}</div>${p.lines.map(l => `<div class="small">${qtyf(l.qty)} × ${esc(l.name)} @ ${money(l.unit_cost)}</div>`).join('')}
+      ${p.status === 'open' && can('manager') ? `<div class="row" style="margin-top:8px"><button class="btn sm" onclick="receivePo(${p.id})">Receive</button><button class="btn sec sm" onclick="cancelPo(${p.id})">Cancel</button></div>` : ''}</div>`).join('') : '<div class="card empty">No purchase orders yet.</div>');
+  if ($('#newsup')) $('#newsup').onclick = () => modal('New supplier', fields([{ n: 'name', label: 'Name', req: true }, { n: 'phone', label: 'Phone' }, { n: 'email', label: 'Email' }]), { onSubmit: async (f, d) => { await post('/api/suppliers', d); closeModal(); toast('Added'); } });
+  if ($('#newpo')) $('#newpo').onclick = async () => {
+    const [sups, items] = await Promise.all([get('/api/suppliers'), get('/api/items')]);
+    const form = modal('New purchase order', fields([{ n: 'supplier_id', label: 'Supplier', type: 'select', blank: '— choose —', opts: sups.map(s => [s.id, s.name]) }]) +
+      `<div id="lines"></div><button type="button" class="btn sec sm" id="addl" style="margin-top:8px">+ Add line</button>`, {
+      submitLabel: 'Create order', onSubmit: async (f, d) => {
+        const lines = [...f.querySelectorAll('.pl')].map(r => ({ item_id: +r.querySelector('[name=item]').value, qty: r.querySelector('[name=q]').value, unit_cost: r.querySelector('[name=c]').value })).filter(l => l.item_id && l.qty);
+        await post('/api/pos', { supplier_id: d.supplier_id || null, lines }); closeModal(); route();
+      }
+    });
+    const addLine = () => { const d = document.createElement('div'); d.className = 'pl f2'; d.style.gridTemplateColumns = '2fr 1fr 1fr'; d.innerHTML = `<select name="item"><option value="">Item…</option>${items.map(i => `<option value="${i.id}" data-c="${i.cost}">${esc(i.name)}</option>`).join('')}</select><input name="q" type="number" step="any" placeholder="Qty"><input name="c" type="number" step="any" placeholder="₹ each">`; d.querySelector('select').onchange = e => { d.querySelector('[name=c]').value = e.target.selectedOptions[0].dataset.c || ''; }; $('#lines').appendChild(d); };
+    $('#addl').onclick = addLine; addLine();
+  };
+};
+window.receivePo = async id => { const locs = await locOptions(['store']); modal('Receive purchase order', fields([{ n: 'location_id', label: 'Into which store', type: 'select', opts: locs }, { n: 'create_expense', label: 'Also record as an expense (you can attach the invoice photo after)', type: 'select', opts: [['1', 'Yes'], ['', 'No']] }]), { submitLabel: 'Receive', onSubmit: async (f, d) => { const r = await post(`/api/pos/${id}/receive`, { location_id: +d.location_id, create_expense: !!d.create_expense }); closeModal(); toast('Stock received'); if (r.expense_id) go('#/expenses'); else route(); } }); };
+window.cancelPo = id => guard(async () => { if (confirm('Cancel this order?')) { await post(`/api/pos/${id}/cancel`); route(); } });
+
+// ====== EXPENSES ======
+routes.expenses = async (v, sub) => {
+  if (sub === 'new') return expenseForm(v);
+  const qs = new URLSearchParams(location.hash.split('?')[1] || '');
+  const cats = await get('/api/expense-categories');
+  const f = { from: qs.get('from') || todayStr().slice(0, 8) + '01', to: qs.get('to') || todayStr(), category: qs.get('c') || '', status: qs.get('s') || '' };
+  const privileged = can('manager', 'accounts');
+  v.innerHTML = head('Expenses', '<a class="btn sm" href="#/expenses/new">+ Add expense</a>') +
+    `<div class="card"><div class="f2"><div><label>From</label><input type="date" id="ef" value="${f.from}"></div><div><label>To</label><input type="date" id="et" value="${f.to}"></div>
+    <div><label>Category</label><select id="ec"><option value="">All</option>${cats.map(c => `<option ${c === f.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>
+    <div><label>Status</label><select id="es"><option value="">All</option>${['pending', 'approved', 'rejected'].map(s => `<option ${s === f.status ? 'selected' : ''}>${s}</option>`).join('')}</select></div></div></div>
+    <div id="sum"></div><div id="list"></div>`;
+  const draw = async () => {
+    const p = new URLSearchParams({ from: $('#ef').value, to: $('#et').value, category: $('#ec').value, status: $('#es').value });
+    const rows = await get('/api/expenses?' + p);
+    if (privileged) {
+      const s = await get('/api/expenses/summary?' + new URLSearchParams({ from: p.get('from'), to: p.get('to'), category: p.get('category') }));
+      const max = Math.max(1, ...s.by_category.map(c => c.total));
+      $('#sum').innerHTML = `<div class="card"><div class="row sb"><h2 style="margin:0">Total ${money(s.total)}</h2><a class="btn sec sm" href="/api/expenses.csv?${p}">⬇ CSV</a></div><div style="margin-top:8px">${s.by_category.map(c => `<div class="barrow"><span>${esc(c.category)}</span><div><div class="bar" style="width:${Math.max(3, c.total / max * 100)}%"></div></div><span class="r">${money(c.total)}</span></div>`).join('')}</div><p class="mute small" style="margin:6px 0 0">Excludes rejected expenses.</p></div>`;
+    }
+    $('#list').innerHTML = rows.length ? rows.map(e => `<div class="card"><div class="row sb"><span class="bold">${money(e.amount)} · ${esc(e.category || '')}</span><span class="tag ${{ approved: 'green', rejected: 'red', pending: 'amber' }[e.status]}">${esc(e.status)}</span></div>
+      <div class="small">${esc(e.vendor || '—')} · ${esc(e.date)} · ${esc(e.payment_method)}</div>${e.description ? `<div class="small mute">${esc(e.description)}</div>` : ''}
+      <div class="small mute">by ${esc(e.submitted_name || '?')}${e.approved_name && e.status !== 'pending' ? ` · ${e.status} by ${esc(e.approved_name)}` : ''}${e.reject_reason ? ` — ${esc(e.reject_reason)}` : ''}</div>
+      <div class="thumbs">${e.photos.map(ph => `<img src="/uploads/${esc(ph.filename)}" loading="lazy" onclick="lightbox('/uploads/${esc(ph.filename)}')">`).join('')}${e.photos.length ? '' : '<span class="small" style="color:var(--amber)">No receipt photo</span>'}</div>
+      <div class="row" style="margin-top:8px"><button class="btn sec sm" onclick="addPhotos(${e.id})">📷 Add photo</button>${(privileged || e.status === 'pending') ? `<button class="btn sec sm" onclick="editExpense(${e.id})">Edit</button>` : ''}
+      ${privileged && e.status === 'pending' ? `<button class="btn sm" onclick="decide(${e.id},'approved')">Approve</button><button class="btn red sm" onclick="decide(${e.id},'rejected')">Reject</button>` : ''}
+      ${can('accounts') ? `<button class="btn sec sm" onclick="delExpense(${e.id})">Delete</button>` : ''}</div></div>`).join('') : '<div class="card empty">No expenses for these filters.</div>';
+    window._exp = rows;
+  };
+  ['ef', 'et', 'ec', 'es'].forEach(i => $('#' + i).onchange = () => guard(draw)); await draw();
+};
+async function expenseForm(v, e) {
+  const cats = await get('/api/expense-categories'); const locs = await locOptions(['room', 'store', 'other']);
+  const html = `<form id="ef" class="card">${fields([{ n: 'amount', label: 'Amount (₹)', type: 'number', step: 'any', req: true, auto: true, value: e?.amount }, { n: 'date', label: 'Date', type: 'date', req: true, value: e?.date || todayStr() },
+    { n: 'category', label: 'Category', type: 'select', opts: cats, req: true, value: e?.category }, { n: 'vendor', label: 'Paid to / vendor', value: e?.vendor },
+    { n: 'payment_method', label: 'Paid by', type: 'select', opts: ['cash', 'upi', 'card', 'bank transfer', 'credit'], value: e?.payment_method }, { n: 'description', label: 'What was it for?', type: 'textarea', value: e?.description },
+    { n: 'location_id', label: 'Related room / place (optional)', type: 'select', blank: '— none —', opts: locs, value: e?.location_id }])}
+    ${e ? '' : `<label>Receipt / bill photos</label><input type="file" id="ph" accept="image/*" capture="environment" multiple><input type="file" id="ph2" accept="image/*" multiple style="margin-top:6px"><div class="thumbs" id="prev"></div><p class="small mute">Take a photo of the bill now, or choose from your gallery. Photos are resized automatically.</p>`}
+    <div class="err" id="eerr"></div><div class="row" style="margin-top:12px"><button class="btn big">${e ? 'Save' : 'Submit expense'}</button><a class="btn sec big" href="#/expenses">Cancel</a></div></form>`;
+  if (v) v.innerHTML = head(e ? 'Edit expense' : 'New expense') + html; else modal('Edit expense', '', { hideSubmit: true });
+  return html;
+}
+let pending = [];
+const origExpenses = routes.expenses;
+routes.expenses = async (v, sub) => {
+  if (sub !== 'new') return origExpenses(v, sub);
+  pending = []; await expenseForm(v);
+  const prev = () => { $('#prev').innerHTML = pending.map((f, i) => `<span class="x"><img src="${URL.createObjectURL(f)}"><button type="button" onclick="rmPending(${i})">×</button></span>`).join(''); };
+  window.rmPending = i => { pending.splice(i, 1); prev(); };
+  for (const id of ['ph', 'ph2']) $('#' + id).onchange = async e => { for (const f of e.target.files) pending.push(await shrink(f)); e.target.value = ''; prev(); };
+  $('#ef').onsubmit = async ev => {
+    ev.preventDefault(); const btn = ev.target.querySelector('button.btn'); btn.disabled = true;
+    try {
+      const fd = new FormData(); Object.entries(readForm(ev.target)).forEach(([k, x]) => fd.append(k, x)); pending.forEach(f => fd.append('photos', f, f.name || 'photo.jpg'));
+      if (!pending.length && !confirm('No receipt photo attached. Submit anyway?')) { btn.disabled = false; return; }
+      await api('POST', '/api/expenses', fd, true); toast('Expense saved'); go('#/expenses');
+    } catch (er) { $('#eerr').textContent = er.message; btn.disabled = false; }
+  };
+};
+window.addPhotos = id => {
+  const form = modal('Add receipt photo', `<input type="file" id="fp" accept="image/*" capture="environment" multiple><input type="file" id="fp2" accept="image/*" multiple style="margin-top:6px"><div class="thumbs" id="prev"></div>`, {
+    submitLabel: 'Upload', onSubmit: async () => { if (!files.length) throw new Error('Choose a photo'); const fd = new FormData(); files.forEach(f => fd.append('photos', f, f.name || 'photo.jpg')); await api('POST', `/api/expenses/${id}/photos`, fd, true); closeModal(); toast('Uploaded'); route(); }
+  });
+  const files = []; for (const i of ['fp', 'fp2']) $('#' + i).onchange = async e => { for (const f of e.target.files) files.push(await shrink(f)); e.target.value = ''; $('#prev').innerHTML = files.map(f => `<img src="${URL.createObjectURL(f)}">`).join(''); };
+};
+window.editExpense = async id => {
+  const e = window._exp.find(x => x.id === id); const cats = await get('/api/expense-categories'); const locs = await locOptions();
+  modal('Edit expense', fields([{ n: 'amount', label: 'Amount (₹)', type: 'number', step: 'any', req: true, value: e.amount }, { n: 'date', label: 'Date', type: 'date', req: true, value: e.date }, { n: 'category', label: 'Category', type: 'select', opts: cats, value: e.category },
+    { n: 'vendor', label: 'Vendor', value: e.vendor }, { n: 'payment_method', label: 'Paid by', type: 'select', opts: ['cash', 'upi', 'card', 'bank transfer', 'credit'], value: e.payment_method }, { n: 'description', label: 'Description', type: 'textarea', value: e.description }]) +
+    (e.photos.length ? `<label>Photos</label><div class="thumbs">${e.photos.map(p => `<span class="x"><img src="/uploads/${esc(p.filename)}"><button type="button" onclick="delPhoto(${e.id},${p.id})">×</button></span>`).join('')}</div>` : ''),
+    { onSubmit: async (f, d) => { await put('/api/expenses/' + id, d); closeModal(); route(); } });
+};
+window.delPhoto = (id, pid) => guard(async () => { if (confirm('Remove this photo?')) { await api('DELETE', `/api/expenses/${id}/photos/${pid}`); closeModal(); route(); } });
+window.decide = (id, decision) => decision === 'approved' ? guard(async () => { await post(`/api/expenses/${id}/decision`, { decision }); route(); }) :
+  modal('Reject expense', fields([{ n: 'reason', label: 'Reason', req: true }]), { submitLabel: 'Reject', onSubmit: async (f, d) => { await post(`/api/expenses/${id}/decision`, { decision, reason: d.reason }); closeModal(); route(); } });
+window.delExpense = id => guard(async () => { if (confirm('Delete this expense and its photos permanently?')) { await api('DELETE', '/api/expenses/' + id); route(); } });
+window.lightbox = lightbox;
+
+// ====== LABELS ======
+routes.labels = async v => {
+  const qs = new URLSearchParams(location.hash.split('?')[1] || '');
+  const [locs, items, assets] = await Promise.all([get('/api/locations'), get('/api/items'), get('/api/assets')]);
+  const preset = { assets: (qs.get('assets') || '').split(',').filter(Boolean).map(Number), loc: qs.get('loc'), item: qs.get('item') };
+  let mode = preset.assets.length ? 'assets' : preset.loc ? 'rooms' : preset.item ? 'items' : 'rooms';
+  const sel = new Set(preset.assets.map(i => 'a' + i)); if (preset.loc) sel.add('l' + preset.loc); if (preset.item) sel.add('i' + preset.item);
+  const draw = () => {
+    const src = mode === 'rooms' ? locs.map(l => ({ k: 'l' + l.id, code: l.code, name: l.name })) : mode === 'items' ? items.filter(i => i.kind === 'consumable').map(i => ({ k: 'i' + i.id, code: i.barcode, name: i.name })) : assets.filter(a => a.condition !== 'retired').map(a => ({ k: 'a' + a.id, code: a.tag, name: a.name + (a.location ? ' · ' + a.location : '') }));
+    $('#pick').innerHTML = src.map(s => `<label style="display:flex;gap:8px;align-items:center;margin:2px 0;color:var(--ink);font-size:14px"><input type="checkbox" style="width:auto" data-k="${s.k}" ${sel.has(s.k) ? 'checked' : ''}> <span class="code">${esc(s.code)}</span> ${esc(s.name)}</label>`).join('');
+    $('#pick').querySelectorAll('input').forEach(c => c.onchange = () => { c.checked ? sel.add(c.dataset.k) : sel.delete(c.dataset.k); render(); });
+    render();
+    function render() { const chosen = src.filter(s => sel.has(s.k)); $('#out').innerHTML = chosen.length ? chosen.map(s => `<div class="label"><img src="/api/barcode?text=${encodeURIComponent(s.code)}"><div class="c">${esc(s.code)}</div><div class="n">${esc(s.name)}</div></div>`).join('') : '<div class="empty noprint">Tick items on the left to preview labels.</div>'; $('#n').textContent = chosen.length; }
+  };
+  v.innerHTML = head('Print labels', '<button class="btn sm" onclick="window.print()">🖨 Print</button>') +
+    `<div class="noprint tabs">${['rooms', 'assets', 'items'].map(m => `<a data-m="${m}" class="${mode === m ? 'on' : ''}">${m === 'rooms' ? 'Rooms & stores' : m === 'assets' ? 'Assets' : 'Stock items'}</a>`).join('')}</div>
+    <div class="row noprint" style="align-items:flex-start"><div class="card" style="flex:1;min-width:260px;max-height:300px;overflow:auto" id="pick"></div><div class="card" style="flex:1;min-width:200px"><b id="n">0</b> label(s) selected<br><button class="btn sec sm" id="all" style="margin-top:8px">Select all shown</button> <button class="btn sec sm" id="none">Clear</button><p class="small mute">Code 128 barcodes work with phone cameras and any handheld scanner. Print at least 5 cm wide on matt sticker paper (glossy reflects light), and stick flat on the item, door frame or shelf.</p></div></div>
+    <div class="labels" id="out"></div>`;
+  v.querySelectorAll('[data-m]').forEach(a => a.onclick = () => { mode = a.dataset.m; v.querySelectorAll('[data-m]').forEach(x => x.classList.toggle('on', x === a)); draw(); });
+  $('#all').onclick = () => { $('#pick').querySelectorAll('input').forEach(c => { c.checked = true; sel.add(c.dataset.k); }); draw(); };
+  $('#none').onclick = () => { sel.clear(); draw(); };
+  draw();
+};
+
+// ====== REPORTS ======
+routes.reports = async (v, tab = 'low') => {
+  const T = [['low', 'Low stock'], ['usage', 'Usage per night'], ['value', 'Valuation'], ['audits', 'Audits'], ['log', 'Activity log']];
+  const tabs = `<div class="tabs">${T.map(t => `<a class="${tab === t[0] ? 'on' : ''}" href="#/reports/${t[0]}">${t[1]}</a>`).join('')}</div>`;
+  let body = '';
+  if (tab === 'low') { const r = await get('/api/reports/lowstock'); body = r.length ? `<div class="card scroll"><table><tr><th>Item</th><th class="r">In stores</th><th class="r">Reorder at</th><th>Supplier</th></tr>${r.map(i => `<tr class="click" onclick="go('#/item/${i.id}')"><td>${esc(i.name)}</td><td class="r bold" style="color:var(--red)">${qtyf(i.qty)}</td><td class="r">${qtyf(i.reorder_level)}</td><td>${esc(i.supplier)}</td></tr>`).join('')}</table></div>` : '<div class="card empty">Nothing is running low ✅</div>'; }
+  if (tab === 'usage') {
+    if (!can('manager', 'accounts')) throw new Error('Managers only');
+    const qs = new URLSearchParams(location.hash.split('?')[1] || ''); const from = qs.get('from') || todayStr().slice(0, 8) + '01', to = qs.get('to') || todayStr();
+    const r = await get(`/api/reports/consumption?from=${from}&to=${to}`);
+    body = `<div class="card"><div class="f2"><div><label>From</label><input type="date" id="rf" value="${r.from}"></div><div><label>To</label><input type="date" id="rt" value="${r.to}"></div></div><p class="mute small">Occupied room-nights in period (from bookings): <b>${r.occupied_nights}</b></p>
+      ${r.rows.length ? `<div class="scroll"><table><tr><th>Item</th><th class="r">Used</th><th class="r">Per occupied night</th><th class="r">Value</th></tr>${r.rows.map(x => `<tr><td>${esc(x.name)}</td><td class="r">${qtyf(x.used)} ${esc(x.unit)}</td><td class="r">${x.per_night == null ? '—' : x.per_night.toFixed(2)}</td><td class="r">${money(x.value)}</td></tr>`).join('')}</table></div>` : '<p class="mute">No usage recorded. Use “Used” in a room to record consumption.</p>'}</div>`;
+  }
+  if (tab === 'value') { const r = await get('/api/reports/valuation'); body = `<div class="card"><h2>Stock value by place</h2>${r.stock.map(s => `<div class="row sb"><span>${esc(s.location)}</span><b>${money(s.value)}</b></div>`).join('') || '<p class="mute">No stock</p>'}</div><div class="card"><h2>Fixed assets</h2>${r.assets.n} units · ${money(r.assets.value)} at cost</div>`; }
+  if (tab === 'audits') { const r = await get('/api/audits'); body = r.length ? r.map(a => `<div class="card"><div class="row sb"><b>${esc(a.location)}</b><span class="small mute">${esc(dt(a.ts))} · ${esc(a.user)}</span></div><div class="small">${a.result.scanned} scanned · <span class="tag red">${a.result.missing.length} missing</span> <span class="tag amber">${a.result.extra.length} extra</span> <span class="tag amber">${a.result.variances.length} count diffs</span></div></div>`).join('') : '<div class="card empty">No audits saved yet.</div>'; }
+  if (tab === 'log') { body = `<div class="card">${movTable(await get('/api/movements?limit=200'))}</div>`; }
+  v.innerHTML = head('Reports') + tabs + body;
+  if ($('#rf')) ['rf', 'rt'].forEach(i => $('#' + i).onchange = () => go(`#/reports/usage?from=${$('#rf').value}&to=${$('#rt').value}`));
+};
+
+// ====== MORE (mobile menu) ======
+routes.more = async v => {
+  v.innerHTML = head('More') + `<div class="grid g2">${SIDE_EXTRA.filter(n => n[0] !== 'admin' || can()).map(n => `<a class="stat" href="#/${n[0]}"><div class="bold">${n[1]}</div></a>`).join('')}</div>
+  <div class="row" style="margin-top:14px"><button class="btn sec" id="pw">Change my password</button><button class="btn sec" id="lo">Sign out</button></div><p class="mute small">Signed in as ${esc(me.name)} (${esc(me.role)})</p>`;
+  $('#lo').onclick = async () => { await post('/api/logout'); me = null; renderLogin(); };
+  $('#pw').onclick = () => modal('Change password', fields([{ n: 'current', label: 'Current password', type: 'password', req: true }, { n: 'next', label: 'New password (8+ characters)', type: 'password', req: true }]), { onSubmit: async (f, d) => { await post('/api/me/password', d); closeModal(); toast('Password changed'); } });
+};
+
+// ====== ADMIN / SETTINGS ======
+routes.admin = async (v, tab = 'locations') => {
+  if (!can('manager')) throw new Error('Managers only');
+  const T = [['locations', 'Rooms & places'], ['templates', 'Room standards'], ['integrations', 'Airbnb & PMS']].concat(can() ? [['users', 'Users']] : []);
+  const tabs = `<div class="tabs">${T.map(t => `<a class="${tab === t[0] ? 'on' : ''}" href="#/admin/${t[0]}">${t[1]}</a>`).join('')}</div>`;
+  let body = '';
+  if (tab === 'locations') {
+    const l = await get('/api/locations');
+    body = `<button class="btn sm" id="addloc">+ Add room / place</button><button class="btn sec sm" id="bulk">+ Add many rooms</button><div class="card scroll" style="margin-top:10px"><table><tr><th>Name</th><th>Code</th><th>Type</th><th>Airbnb link</th><th></th></tr>${l.map(x => `<tr><td>${esc(x.name)}</td><td class="code">${esc(x.code)}</td><td>${esc(x.type)} ${esc(x.room_type || '')}</td><td>${x.ical_url ? '✅' : '—'}</td><td class="r"><button class="btn sec sm" onclick="editLoc(${x.id})">Edit</button></td></tr>`).join('')}</table></div>`;
+    window._locs = l;
+  }
+  if (tab === 'templates') {
+    const [t, items] = await Promise.all([get('/api/templates'), get('/api/items')]);
+    const types = [...new Set([...t.types, ...t.rows.map(r => r.room_type)])];
+    body = `<p class="mute small">The standard list of fixed assets for each room type. Room audits flag anything below this standard.</p>` + (types.length ? types.map(ty => `<div class="card"><div class="row sb"><b>${esc(ty)}</b><button class="btn sec sm" onclick="editTpl('${esc(ty)}')">Edit</button></div>${t.rows.filter(r => r.room_type === ty).map(r => `<div class="small">${qtyf(r.qty)} × ${esc(r.name)}</div>`).join('') || '<span class="mute small">Empty</span>'}</div>`).join('') : '<div class="card empty">Give rooms a “room type” first (e.g. Deluxe).</div>');
+    window._items = items.filter(i => i.kind === 'asset'); window._tpl = t.rows;
+  }
+  if (tab === 'integrations') {
+    const s = await get('/api/settings'); const store = await locOptions(['store']);
+    body = `<div class="card"><h2>Airbnb calendars</h2><ol class="small"><li>In Airbnb → Calendar → Availability → <b>Export calendar</b>, copy the link for the listing.</li><li>Open the matching room under <b>Rooms & places → Edit</b> and paste it in “Airbnb calendar link”.</li><li>Press the button below (it also syncs automatically every 30 minutes).</li></ol>
+      <button class="btn" id="sync">Sync Airbnb now</button> <span class="small mute">Last sync: ${esc(s.last_sync || 'never')}</span><div id="syncres" class="small"></div></div>
+      <div class="card"><h2>PMS connection</h2><p class="small">Your PMS (or its channel manager / Zapier) sends booking, check-in, check-out and room-status events to this address with your key:</p>
+      <div class="small mute">Endpoint (POST, JSON)</div><div class="code">${esc(s.pms_endpoint)}</div><div class="small mute" style="margin-top:8px">Header <b>x-api-key</b></div><div class="code">${esc(s.pms_api_key)}</div>
+      <div class="small mute" style="margin-top:8px">Example body</div><div class="code">{"event":"checkout","room":"R-101","uid":"RES123"}<br>{"event":"booking","room":"R-101","uid":"RES124","guest":"A Sharma","checkin":"2026-12-01","checkout":"2026-12-04"}<br>events: booking, checkin, checkout, cancel, room_status</div>
+      <p class="small mute">“room” can be the room code, the room name, or the “PMS room ID” you set on the room. Checkout marks the room dirty so housekeeping sees it.</p><button class="btn sec sm" id="regen">Generate a new key</button></div>
+      ${can() ? '<div class="card"><h2>Backup</h2><p class="small mute">Download a copy of all data (stock, assets, expenses). Do this regularly. Receipt photos live in the server’s data/uploads folder.</p><a class="btn sec sm" href="/api/backup">⬇ Download database backup</a></div>' : ''}
+      <div class="card"><h2>Main store</h2><p class="small mute">Restock lists are filled from this store.</p><select id="ms">${store.map(o => `<option value="${o[0]}" ${o[0] == s.main_store_id ? 'selected' : ''}>${esc(o[1])}</option>`).join('')}</select></div>`;
+  }
+  if (tab === 'users') {
+    const u = await get('/api/users'); window._users = u;
+    body = `<button class="btn sm" id="adduser">+ Add user</button><div class="card scroll" style="margin-top:10px"><table>${u.map(x => `<tr><td>${esc(x.name)}<div class="small mute">${esc(x.email)}</div></td><td>${esc(x.role)} ${x.active ? '' : '<span class="tag red">off</span>'}</td><td class="r"><button class="btn sec sm" onclick="editUser(${x.id})">Edit</button></td></tr>`).join('')}</table></div>
+    <p class="small mute">Roles — <b>admin</b>: everything · <b>manager</b>: stock, assets, approvals, settings · <b>accounts</b>: expenses & purchasing · <b>housekeeping</b>: scan, use stock, audit rooms, submit own expenses.</p>`;
+  }
+  v.innerHTML = head('Settings') + tabs + body;
+  const locForm = (x = {}) => modal(x.id ? 'Edit place' : 'Add room / place', fields([{ n: 'name', label: 'Name', req: true, value: x.name }, { n: 'type', label: 'Type', type: 'select', opts: ['room', 'store', 'other'], value: x.type }, { n: 'room_type', label: 'Room type (Deluxe, Suite…)', value: x.room_type }, { n: 'floor', label: 'Floor', value: x.floor },
+    { n: 'code', label: 'Barcode text (blank = auto, e.g. R-101)', value: x.code, ph: 'e.g. R-101' }, { n: 'ical_url', label: 'Airbnb calendar link (https://…)', value: x.ical_url }, { n: 'pms_room_id', label: 'PMS room ID', value: x.pms_room_id }].concat(x.id ? [{ n: 'active', label: 'Active', type: 'select', opts: [[1, 'Yes'], [0, 'No — hide']], value: x.active }] : [])),
+    { onSubmit: async (f, d) => { x.id ? await put('/api/locations/' + x.id, { ...d, active: +d.active }) : await post('/api/locations', d); closeModal(); route(); } });
+  window.editLoc = id => locForm(window._locs.find(l => l.id === id));
+  if ($('#addloc')) $('#addloc').onclick = () => locForm();
+  if ($('#bulk')) $('#bulk').onclick = () => modal('Add many rooms', fields([{ n: 'from', label: 'First room number', type: 'number', req: true, value: 101 }, { n: 'to', label: 'Last room number', type: 'number', req: true, value: 120 }, { n: 'room_type', label: 'Room type', value: 'Deluxe' }, { n: 'floor', label: 'Floor' }]), { onSubmit: async (f, d) => { const a = +d.from, b = +d.to; if (b < a || b - a > 200) throw new Error('Check the range'); for (let n = a; n <= b; n++) await post('/api/locations', { name: 'Room ' + n, code: 'R-' + n, type: 'room', room_type: d.room_type, floor: d.floor }).catch(() => { }); closeModal(); route(); } });
+  window.editTpl = ty => { const cur = window._tpl.filter(r => r.room_type === ty); modal('Standard for ' + ty, window._items.map(i => `<div class="row sb" style="margin:6px 0"><span>${esc(i.name)}</span><input data-i="${i.id}" type="number" min="0" step="1" style="width:80px" value="${cur.find(c => c.item_id === i.id)?.qty || 0}"></div>`).join('') || '<p class="mute">Create asset types first.</p>', { onSubmit: async f => { await put('/api/templates/' + encodeURIComponent(ty), { lines: [...f.querySelectorAll('[data-i]')].map(x => ({ item_id: +x.dataset.i, qty: +x.value })) }); closeModal(); route(); } }); };
+  if ($('#sync')) $('#sync').onclick = () => guard(async () => { $('#sync').disabled = true; const r = await post('/api/sync/ical'); $('#sync').disabled = false; $('#syncres').innerHTML = r.length ? r.map(x => `<div>${x.ok ? '✅' : '❌'} ${esc(x.room)} — ${x.ok ? x.events + ' events' : esc(x.error)}</div>`).join('') : 'No rooms have a calendar link yet.'; });
+  if ($('#regen')) $('#regen').onclick = () => guard(async () => { if (confirm('The old key will stop working. Continue?')) { await put('/api/settings', { regenerate_key: true }); route(); } });
+  if ($('#ms')) $('#ms').onchange = () => guard(async () => { await put('/api/settings', { main_store_id: $('#ms').value }); toast('Saved'); });
+  if ($('#adduser')) $('#adduser').onclick = () => modal('Add user', fields([{ n: 'name', label: 'Name', req: true }, { n: 'email', label: 'Email', type: 'email', req: true }, { n: 'password', label: 'Password (8+ characters)', type: 'password', req: true }, { n: 'role', label: 'Role', type: 'select', opts: ['housekeeping', 'accounts', 'manager', 'admin'] }]), { onSubmit: async (f, d) => { await post('/api/users', d); closeModal(); route(); } });
+  window.editUser = id => { const u = window._users.find(x => x.id === id); modal('Edit user', fields([{ n: 'name', label: 'Name', value: u.name }, { n: 'role', label: 'Role', type: 'select', opts: ['housekeeping', 'accounts', 'manager', 'admin'], value: u.role }, { n: 'active', label: 'Active', type: 'select', opts: [[1, 'Yes'], [0, 'No']], value: u.active }, { n: 'password', label: 'New password (leave blank to keep)', type: 'password' }]), { onSubmit: async (f, d) => { const b = { name: d.name, role: d.role, active: +d.active }; if (d.password) b.password = d.password; await put('/api/users/' + id, b); closeModal(); route(); } }); };
+};
+
+// ====== boot ======
+(async () => { try { me = await get('/api/me'); renderShell(); route(); } catch { renderLogin(); } })();
