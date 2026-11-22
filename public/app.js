@@ -671,5 +671,9 @@ routes.admin = async (v, tab = 'locations') => {
 };
 
 // ====== boot ======
-if ('serviceWorker' in navigator) pushReg().catch(() => { });
+if ('serviceWorker' in navigator) pushReg().then(r => r && r.update().catch(() => { })).catch(() => { });
+// when a new version has been deployed, reload the app the next time it is brought to the front
+let buildSeen = null;
+async function checkVersion() { try { const v = (await (await fetch('/api/version', { cache: 'no-store' })).json()).v; if (buildSeen && v !== buildSeen) { if (!document.querySelector('.modal')) location.reload(); } else buildSeen = v; } catch { } }
+checkVersion(); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkVersion(); }); setInterval(checkVersion, 5 * 60e3);
 (async () => { try { me = await get('/api/me'); renderShell(); route(); } catch { renderLogin(); } })();
