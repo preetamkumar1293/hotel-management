@@ -212,7 +212,8 @@ app.get('/uploads/:name', auth, (req, res) => {
   res.sendFile(f);
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+// always revalidate app files so phones pick up new versions immediately (images/vendor can cache a little)
+app.use(express.static(path.join(__dirname, 'public'), { etag: true, setHeaders: (res, f) => { res.setHeader('Cache-Control', /\.(png|svg)$|vendor/.test(f) ? 'public, max-age=86400' : 'no-cache'); } }));
 app.use('/api', auth);
 
 const propRows = req => db.prepare(`SELECT id,code,name,city FROM properties WHERE id IN (${req.allowed.map(Number).join(',') || '0'}) ORDER BY name`).all();

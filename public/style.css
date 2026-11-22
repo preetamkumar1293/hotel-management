@@ -164,3 +164,19 @@ div.code{padding:8px 10px}
 }
 
 @media(max-width:820px){.propsw{max-width:140px;padding:5px 8px;font-size:12px}}
+
+/* phone top bar: everything must fit, including logo, property switcher, search, bell, + and avatar */
+@media(max-width:820px){
+ html,body{overflow-x:hidden}
+ .topbar{gap:6px;padding:0 8px}
+ .brand-m{flex:none}.brand-m img{width:30px;height:30px}
+ .propsw{flex:0 1 auto;min-width:0;max-width:118px}
+ .gsearch{flex:1 1 0;min-width:0}
+ .gsearch input{padding-left:30px;padding-right:4px;min-width:0;width:100%}
+ .gsearch .gs-ic{left:9px}
+ .tb-right{gap:6px;flex:none;margin-left:0}
+ .tb-right .btn{padding:8px 11px}.tb-right .qt{display:none}
+ .iconbtn{width:36px;height:36px}
+ .avatar{flex:none}
+ .page-head h1{min-width:0;font-size:20px}
+}
