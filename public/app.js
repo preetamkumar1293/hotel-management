@@ -106,6 +106,30 @@ function popMenu(anchor, html) {
   return p;
 }
 window.changePw = () => modal('Change password', fields([{ n: 'current', label: 'Current password', type: 'password', req: true }, { n: 'next', label: 'New password (8+ characters)', type: 'password', req: true }]), { onSubmit: async (f, d) => { await post('/api/me/password', d); closeModal(); toast('Password changed'); } });
+// ====== push notifications ======
+const b64u = s => { const p = '='.repeat((4 - s.length % 4) % 4); const r = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from([...r].map(c => c.charCodeAt(0))); };
+async function pushReg() { return 'serviceWorker' in navigator ? navigator.serviceWorker.register('/sw.js') : null; }
+async function notifSettings() {
+  const cfg = await get('/api/push/config');
+  const iOS = /iphone|ipad|ipod/i.test(navigator.userAgent), standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  const ok = cfg.supported && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  let sub = null; if (ok) { const reg = await pushReg(); await navigator.serviceWorker.ready; sub = await reg.pushManager.getSubscription(); }
+  const note = !cfg.supported ? 'Notifications are not available on this server.' : !ok ? (iOS && !standalone ? 'On iPhone/iPad: tap Share → <b>Add to Home Screen</b>, open the app from the home screen, then come back here.' : 'This browser does not support notifications.') : Notification.permission === 'denied' ? 'Notifications are blocked for this site. Allow them in your browser/site settings, then try again.' : '';
+  const boxes = Object.entries(cfg.types).map(([k, v]) => `<label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0;color:var(--ink);font-size:14px"><input type="checkbox" name="nt" value="${k}" style="width:auto;margin-top:3px" ${cfg.enabled.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`).join('');
+  modal('Notifications', `<p class="small">${sub ? '✅ This device will receive reminders.' : 'This device is <b>not</b> receiving reminders yet.'} ${cfg.devices ? `<span class="mute">(${cfg.devices} device(s) on your account)</span>` : ''}</p>${note ? `<p class="small" style="color:var(--amber)">${note}</p>` : ''}
+    <div class="row">${ok ? (sub ? '<button type="button" class="btn sec sm" id="ntoff">Turn off on this device</button><button type="button" class="btn sec sm" id="nttest">Send a test</button>' : '<button type="button" class="btn sm" id="nton">Turn on for this device</button>') : ''}</div>
+    <h3>Remind me about</h3>${boxes}<p class="small mute">Reminders go out at about 8:00 (briefing), 9:00 (stock), 9:30 (warranty), 10:00 and 17:00 (approvals), and instantly when a PMS checkout marks a room dirty.</p>`,
+    { submitLabel: 'Save choices', onSubmit: async f => { await put('/api/push/prefs', { types: [...f.querySelectorAll('[name=nt]:checked')].map(x => x.value) }); closeModal(); toast('Saved'); } });
+  if ($('#nton')) $('#nton').onclick = () => guard(async () => {
+    if (await Notification.requestPermission() !== 'granted') return toast('Permission was not given', true);
+    const reg = await pushReg(); await navigator.serviceWorker.ready;
+    const s2 = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u(cfg.key) });
+    await post('/api/push/subscribe', s2.toJSON()); toast('Notifications are on'); notifSettings();
+  });
+  if ($('#ntoff')) $('#ntoff').onclick = () => guard(async () => { await post('/api/push/unsubscribe', { endpoint: sub.endpoint }); await sub.unsubscribe(); toast('Turned off on this device'); notifSettings(); });
+  if ($('#nttest')) $('#nttest').onclick = () => guard(async () => { const r = await post('/api/push/test'); toast(r.sent ? 'Test sent' : 'Could not deliver the test', !r.sent); });
+}
+window.notifSettings = notifSettings;
 async function doLogout() { await post('/api/logout'); me = null; renderLogin(); }
 
 function renderShell() {
@@ -125,8 +149,8 @@ function renderShell() {
   };
   $('#usr').onclick = e => {
     e.stopPropagation();
-    const p = popMenu(e.currentTarget, `<div class="pi"><b>${esc(me.name)}</b><br>${esc(me.email)} · ${esc(me.role)}</div><button data-a="pw">Change password</button><button data-a="out">Sign out</button>`);
-    p.querySelector('[data-a=pw]').onclick = changePw; p.querySelector('[data-a=out]').onclick = doLogout;
+    const p = popMenu(e.currentTarget, `<div class="pi"><b>${esc(me.name)}</b><br>${esc(me.email)} · ${esc(me.role)}</div><button data-a="nt">🔔 Notifications</button><button data-a="pw">Change password</button><button data-a="out">Sign out</button>`);
+    p.querySelector('[data-a=nt]').onclick = notifSettings; p.querySelector('[data-a=pw]').onclick = changePw; p.querySelector('[data-a=out]').onclick = doLogout;
   };
   if ($('#psw') && me.properties.length > 1) $('#psw').onclick = e => {
     e.stopPropagation();
@@ -646,4 +670,5 @@ routes.admin = async (v, tab = 'locations') => {
 };
 
 // ====== boot ======
+if ('serviceWorker' in navigator) pushReg().catch(() => { });
 (async () => { try { me = await get('/api/me'); renderShell(); route(); } catch { renderLogin(); } })();

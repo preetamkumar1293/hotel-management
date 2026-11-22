@@ -91,13 +91,20 @@ CREATE TABLE IF NOT EXISTS properties (
   main_store_id INTEGER, active INTEGER DEFAULT 1
 );`);
 const hasCol = (t, c) => db.prepare(`PRAGMA table_info(${t})`).all().some(r => r.name === c);
-for (const [t, c, d] of [['locations', 'property_id', 'INTEGER'], ['expenses', 'property_id', 'INTEGER'], ['purchase_orders', 'property_id', 'INTEGER'], ['users', 'property_ids', 'TEXT']])
+for (const [t, c, d] of [['locations', 'property_id', 'INTEGER'], ['expenses', 'property_id', 'INTEGER'], ['purchase_orders', 'property_id', 'INTEGER'], ['users', 'property_ids', 'TEXT'], ['users', 'notify', 'TEXT']])
   if (!hasCol(t, c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${d}`);
 if (!db.prepare('SELECT 1 FROM properties LIMIT 1').get()) {
   const ms = db.prepare("SELECT value FROM settings WHERE key='main_store_id'").get();
   db.prepare('INSERT INTO properties(code,name,legal_name,city,state,main_store_id) VALUES (?,?,?,?,?,?)')
     .run('PAP1', process.env.PROPERTY_NAME || 'Papppy Stays', 'Papppy Hospitalities', 'Jaipur', 'Rajasthan', ms ? Number(ms.value) : null);
 }
+db.exec(`
+CREATE TABLE IF NOT EXISTS push_subs (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), endpoint TEXT UNIQUE NOT NULL,
+  p256dh TEXT NOT NULL, auth TEXT NOT NULL, ua TEXT, created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS reminders_sent (key TEXT PRIMARY KEY, sent_at TEXT DEFAULT (datetime('now')));
+`);
 const firstProp = db.prepare('SELECT MIN(id) id FROM properties').get().id;
 db.exec(`UPDATE expenses SET property_id=(SELECT l.property_id FROM locations l WHERE l.id=expenses.location_id) WHERE property_id IS NULL AND location_id IS NOT NULL`);
 for (const t of ['locations', 'expenses', 'purchase_orders']) db.prepare(`UPDATE ${t} SET property_id=? WHERE property_id IS NULL`).run(firstProp);

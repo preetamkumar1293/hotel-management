@@ -189,6 +189,7 @@ function applyPmsEvent(ev) {
   if (type === 'checkout') {
     if (ev.uid) db.prepare("UPDATE bookings SET status='checked_out' WHERE source='pms' AND uid=?").run(String(ev.uid));
     db.prepare("UPDATE locations SET status='dirty' WHERE id=?").run(loc.id);
+    notify('cleaning', loc.property_id, { title: 'Room needs cleaning', body: `${loc.name} has checked out`, url: '#/rooms', tag: 'clean-' + loc.id });
     return { ok: true };
   }
   return { ok: false, error: `Unknown event "${type}"` };
@@ -828,6 +829,98 @@ app.put('/api/settings', need(), wrap((req, res) => {
   res.json({ ok: true });
 }));
 
+
+// ---------- push notifications & reminders ----------
+let webpush = null;
+try { webpush = require('web-push'); } catch { console.warn('web-push not installed: push notifications disabled'); }
+if (webpush) {
+  if (!getSetting('vapid_public')) { const k = webpush.generateVAPIDKeys(); setSetting('vapid_public', k.publicKey); setSetting('vapid_private', k.privateKey); }
+  webpush.setVapidDetails('mailto:' + (process.env.ADMIN_EMAIL || 'admin@example.com'), getSetting('vapid_public'), getSetting('vapid_private'));
+}
+const NOTIFY_TYPES = {
+  briefing: 'Morning briefing: arrivals, departures, rooms to clean',
+  cleaning: 'A room needs cleaning (right after checkout)',
+  lowstock: 'Low stock and restock reminders',
+  approvals: 'Expenses waiting for approval',
+  warranty: 'Warranties expiring within 7 days'
+};
+const DEFAULT_NOTIFY = { admin: Object.keys(NOTIFY_TYPES), manager: Object.keys(NOTIFY_TYPES), accounts: ['approvals'], housekeeping: ['briefing', 'cleaning'] };
+const userNotify = u => u.notify != null ? String(u.notify).split(',').filter(Boolean) : (DEFAULT_NOTIFY[u.role] || []);
+async function sendTo(sub, payload) {
+  try { await webpush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, JSON.stringify(payload), { TTL: 6 * 3600 }); return true; }
+  catch (e) { if (process.env.PUSH_DEBUG) console.error('push error', e.message); if (e.statusCode === 404 || e.statusCode === 410) db.prepare('DELETE FROM push_subs WHERE id=?').run(sub.id); return false; }
+}
+// send a notification of `type` about property `propId` to everyone who wants it and may see that property
+function notify(type, propId, payload) {
+  if (!webpush) return;
+  const multi = db.prepare('SELECT COUNT(*) c FROM properties WHERE active=1').get().c > 1;
+  const pn = db.prepare('SELECT name FROM properties WHERE id=?').get(propId)?.name;
+  const msg = { icon: '/icon-192.png', ...payload, title: multi && pn ? `${payload.title} · ${pn}` : payload.title };
+  const users = db.prepare('SELECT id,role,active,property_ids,notify FROM users WHERE active=1').all();
+  for (const u of users) {
+    if (!userNotify(u).includes(type) || !allowedProps(u).includes(Number(propId))) continue;
+    for (const sub of db.prepare('SELECT * FROM push_subs WHERE user_id=?').all(u.id)) sendTo(sub, msg);
+  }
+}
+const onceKey = key => { if (db.prepare('SELECT 1 FROM reminders_sent WHERE key=?').get(key)) return false; db.prepare('INSERT INTO reminders_sent(key) VALUES (?)').run(key); return true; };
+const nowHM = () => { const d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+// a reminder slot is "due" from its time until 3 hours later (so a restart late in the evening does not replay the morning)
+const slotDue = hm => { const [h, m] = hm.split(':').map(Number); const end = pad(Math.min(23, h + 3)) + ':' + pad(m); return nowHM() >= hm && nowHM() < end; };
+function runReminders() {
+  if (!webpush) return;
+  const t = today();
+  for (const p of db.prepare('SELECT id,name FROM properties WHERE active=1').all()) {
+    const pl = String(p.id);
+    const one = (sql, ...a) => db.prepare(sql).get(...a);
+    if (slotDue('08:00') && onceKey(`${t}|briefing|${p.id}`)) {
+      const bk = `FROM bookings b JOIN locations l ON l.id=b.location_id WHERE l.property_id=${p.id} AND b.status NOT IN ('cancelled','blocked')`;
+      const arr = one(`SELECT COUNT(*) c ${bk} AND b.checkin=?`, t).c, dep = one(`SELECT COUNT(*) c ${bk} AND b.checkout=?`, t).c;
+      const dirty = one(`SELECT COUNT(*) c FROM locations WHERE property_id=${p.id} AND type='room' AND active=1 AND status='dirty'`).c;
+      if (arr + dep + dirty) notify('briefing', p.id, { title: 'Today at a glance', body: `${arr} arrival(s), ${dep} departure(s) · ${dirty} room(s) to clean`, url: '#/', tag: 'briefing' });
+    }
+    if (slotDue('09:00') && onceKey(`${t}|lowstock|${p.id}`)) {
+      const low = lowStock(pl).length, rs = restockNeeds(null, pl).length;
+      if (low || rs) notify('lowstock', p.id, { title: 'Stock needs attention', body: [low ? `${low} item(s) low in store` : '', rs ? `${rs} restock line(s) for rooms` : ''].filter(Boolean).join(' · '), url: low ? '#/reports/low' : '#/restock', tag: 'lowstock' });
+    }
+    for (const slot of ['10:00', '17:00'])
+      if (slotDue(slot) && onceKey(`${t}|approvals|${slot}|${p.id}`)) {
+        const pend = one(`SELECT COUNT(*) n,COALESCE(SUM(amount),0) t FROM expenses WHERE status='pending' AND property_id=${p.id}`);
+        if (pend.n) notify('approvals', p.id, { title: 'Expenses waiting for approval', body: `${pend.n} expense(s) · ₹${Math.round(pend.t).toLocaleString('en-IN')}`, url: '#/expenses?s=pending', tag: 'approvals' });
+      }
+    if (slotDue('09:30') && onceKey(`${t}|warranty|${p.id}`)) {
+      const w = one(`SELECT COUNT(*) c FROM assets a JOIN locations l ON l.id=a.location_id WHERE l.property_id=${p.id} AND a.condition<>'retired' AND a.warranty_until BETWEEN ? AND date(?,'+7 day')`, t, t).c;
+      if (w) notify('warranty', p.id, { title: 'Warranty expiring soon', body: `${w} asset(s) go out of warranty within 7 days`, url: '#/assets', tag: 'warranty' });
+    }
+  }
+  db.prepare("DELETE FROM reminders_sent WHERE sent_at < datetime('now','-10 day')").run();
+}
+setInterval(() => { try { runReminders(); } catch (e) { console.error('reminders', e.message); } }, 5 * 60e3).unref();
+
+app.get('/api/push/config', wrap((req, res) => {
+  const mine = db.prepare('SELECT notify FROM users WHERE id=?').get(req.user.id);
+  const u = { ...req.user, notify: mine.notify };
+  res.json({ supported: !!webpush, key: webpush ? getSetting('vapid_public') : null, types: NOTIFY_TYPES, enabled: userNotify(u), devices: db.prepare('SELECT COUNT(*) c FROM push_subs WHERE user_id=?').get(req.user.id).c });
+}));
+app.post('/api/push/subscribe', wrap((req, res) => {
+  const s = req.body || {};
+  if (!s.endpoint || !/^https:\/\//.test(s.endpoint) || !s.keys?.p256dh || !s.keys?.auth) throw bad('Invalid subscription');
+  db.prepare('INSERT INTO push_subs(user_id,endpoint,p256dh,auth,ua) VALUES (?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id,p256dh=excluded.p256dh,auth=excluded.auth')
+    .run(req.user.id, s.endpoint, s.keys.p256dh, s.keys.auth, String(req.headers['user-agent'] || '').slice(0, 200));
+  res.json({ ok: true });
+}));
+app.post('/api/push/unsubscribe', wrap((req, res) => { db.prepare('DELETE FROM push_subs WHERE endpoint=? AND user_id=?').run(String(req.body?.endpoint || ''), req.user.id); res.json({ ok: true }); }));
+app.put('/api/push/prefs', wrap((req, res) => {
+  const list = (Array.isArray(req.body?.types) ? req.body.types : []).filter(t => NOTIFY_TYPES[t]);
+  db.prepare('UPDATE users SET notify=? WHERE id=?').run(list.join(','), req.user.id); res.json({ ok: true });
+}));
+app.post('/api/push/test', wrap(async (req, res) => {
+  if (!webpush) throw bad('Push is not available on this server');
+  const subs = db.prepare('SELECT * FROM push_subs WHERE user_id=?').all(req.user.id);
+  if (!subs.length) throw bad('Turn notifications on for this device first');
+  const r = await Promise.all(subs.map(s => sendTo(s, { title: 'Papppy Stays', body: 'Notifications are working 🎉', url: '#/', icon: '/icon-192.png' })));
+  res.json({ sent: r.filter(Boolean).length });
+}));
+
 // ---------- barcode / lookup ----------
 app.get('/api/barcode', wrap((req, res) => {
   const t = String(req.query.text || '').slice(0, 60); if (!t || !/^[\x20-\x7e]+$/.test(t)) throw bad('Invalid barcode text');
@@ -919,3 +1012,4 @@ if (!db.prepare('SELECT 1 FROM users LIMIT 1').get()) {
 // `require.main === module` guard would stop the server from ever starting.
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Papppy Stays app running on port ${port}`));
+module.exports = { app, runReminders, notify };
