@@ -28,6 +28,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .content{min-width:0;display:flex;flex-direction:column}
 .topbar{position:sticky;top:0;z-index:30;background:#fff;border-bottom:1px solid var(--line);height:56px;display:flex;align-items:center;gap:14px;padding:0 22px}
 .brand-m{display:none}.brand-m img{width:34px;height:34px;border-radius:8px;display:block}
+.iconbtn{width:38px;height:38px;border-radius:10px;border:1px solid var(--line,#dfe4ee);background:#fff;display:grid;place-items:center;cursor:pointer;color:#44506a;flex:none}.iconbtn:hover{background:#eef3ff;color:#2f6bff}
 .propsw{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid var(--line,#dfe4ee);border-radius:8px;padding:6px 10px;font:inherit;font-size:13px;font-weight:600;color:inherit;cursor:pointer;white-space:nowrap;max-width:220px}.propsw span{overflow:hidden;text-overflow:ellipsis}.propsw b{font-size:10px;color:#7a869a}
 .pop button.cur{font-weight:700;background:#eef3ff}
 .login-logo{background:#fff;border-radius:16px;padding:10px;margin:0 auto 12px;max-width:260px}.login-logo img{display:block;width:100%}

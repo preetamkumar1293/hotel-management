@@ -79,7 +79,7 @@ const ICON = {
   check: 'M9 11l3 3 8-8M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h9', barcode: 'M4 5v14M7 5v14M11 5v14M14 5v14M17 5v14M20 5v14',
   receipt: 'M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6', chart: 'M4 20V10M10 20V4M16 20v-7M22 20H2',
   gear: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12h2M3 12h2M12 3v2M12 19v2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4',
-  plus: 'M12 5v14M5 12h14', search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-5-5', menu: 'M4 6h16M4 12h16M4 18h16',
+  bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0', plus: 'M12 5v14M5 12h14', search: 'M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-5-5', menu: 'M4 6h16M4 12h16M4 18h16',
   alert: 'M12 9v4M12 17h.01M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z', tool: 'M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z',
   wallet: 'M3 7h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 7l2-3h12v3M16 13h.01', clock: 'M12 7v5l3 2M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z', users: 'M16 11a3 3 0 1 0 0-6M3 20a6 6 0 0 1 12 0M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM17 14a6 6 0 0 1 4 6'
 };
@@ -139,7 +139,7 @@ function renderShell() {
     <div class="content"><header class="topbar"><div class="brand-m"><img src="/favicon.png" alt="Papppy Stays"></div>
       ${(me.properties || []).length ? `<button class="propsw" id="psw" title="Switch property">${ic('bed', 15)}<span>${esc(propName())}</span>${me.properties.length > 1 ? '<b>▾</b>' : ''}</button>` : ''}
       <div class="gsearch"><span class="gs-ic">${ic('search', 16)}</span><input id="gs" placeholder="Search rooms, assets, items — or type a code" autocomplete="off"><div id="gsr" class="gs-res"></div></div>
-      <div class="tb-right"><button class="btn" id="quick">${ic('plus', 16)}<span class="qt">New</span></button><button class="avatar" id="usr" title="${esc(me.name)}">${esc(initials(me.name))}</button></div></header>
+      <div class="tb-right"><button class="iconbtn" id="bell" title="Notifications">${ic('bell', 19)}</button><button class="btn" id="quick">${ic('plus', 16)}<span class="qt">New</span></button><button class="avatar" id="usr" title="${esc(me.name)}">${esc(initials(me.name))}</button></div></header>
     <main class="main" id="view"></main></div></div>
     <nav class="bottom">${MOBILE.map(n => `<a href="#/${n[0]}" data-nav="${n[0]}">${ic(n[2], 21)}${n[1]}</a>`).join('')}</nav>`;
   $('#quick').onclick = e => {
@@ -147,6 +147,7 @@ function renderShell() {
     const p = popMenu(e.currentTarget, `<a href="#/expenses/new">${ic('receipt', 16)} New expense</a>${can('manager') ? `<button data-a="item">${ic('box', 16)} New stock item</button><a href="#/assets">${ic('tag', 16)} Register assets</a><a href="#/po">${ic('cart', 16)} Purchase order</a>` : ''}<a href="#/audit">${ic('check', 16)} Room audit</a><a href="#/scan">${ic('scan', 16)} Scan a code</a>`);
     p.querySelectorAll('[data-a]').forEach(b => b.onclick = () => itemForm());
   };
+  $('#bell').onclick = () => guard(notifSettings);
   $('#usr').onclick = e => {
     e.stopPropagation();
     const p = popMenu(e.currentTarget, `<div class="pi"><b>${esc(me.name)}</b><br>${esc(me.email)} · ${esc(me.role)}</div><button data-a="nt">🔔 Notifications</button><button data-a="pw">Change password</button><button data-a="out">Sign out</button>`);
